@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Behruz — Shaxsiy sayt</title>
+  <meta name="description" content="Behruzning shaxsiy sayti: men haqimda, ko'nikmalar, loyihalar va aloqa.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="nav">
+    <div class="container nav-inner">
+      <a href="#bosh" class="logo">Behruz<span>.</span></a>
+      <button class="menu-btn" aria-label="Menyu" aria-expanded="false">☰</button>
+      <nav class="links">
+        <a href="#haqimda">Men haqimda</a>
+        <a href="#konikmalar">Ko'nikmalar</a>
+        <a href="#loyihalar">Loyihalar</a>
+        <a href="#aloqa">Aloqa</a>
+        <button class="theme-btn" aria-label="Mavzuni almashtirish">🌙</button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section id="bosh" class="hero">
+      <div class="container hero-inner">
+        <div>
+          <p class="eyebrow">Salom, men</p>
+          <h1>Behruz <span class="wave">👋</span></h1>
+          <p class="typed-line">Men <span id="typed"></span><span class="cursor">|</span></p>
+          <p class="lead">Yangi narsalarni o'rganishni, foydali va chiroyli loyihalar yaratishni yaxshi ko'raman.</p>
+          <div class="actions">
+            <a href="#loyihalar" class="btn primary">Loyihalarni ko'rish</a>
+            <a href="#aloqa" class="btn ghost">Bog'lanish</a>
+          </div>
+        </div>
+        <div class="avatar" aria-hidden="true">B</div>
+      </div>
+    </section>
+
+    <section id="haqimda" class="section">
+      <div class="container">
+        <h2 class="reveal">Men haqimda</h2>
+        <div class="about-grid">
+          <p class="reveal">
+            Men O'zbekistondanman. Texnologiyalarga, dasturlashga va dizaynga qiziqaman.
+            Har kuni o'z ustimda ishlab, bilimlarimni oshirib boraman. Maqsadim — odamlarga
+            foyda keltiradigan zamonaviy mahsulotlar yaratish.
+          </p>
+          <div class="stats reveal">
+            <div><strong data-count="10">0</strong><span>Loyihalar</span></div>
+            <div><strong data-count="3">0</strong><span>Yillik tajriba</span></div>
+            <div><strong data-count="100">0</strong><span>% ishtiyoq</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="konikmalar" class="section alt">
+      <div class="container">
+        <h2 class="reveal">Ko'nikmalar</h2>
+        <div class="skills">
+          <div class="skill reveal"><div class="skill-head"><span>HTML & CSS</span><span>90%</span></div><div class="bar"><i style="--w:90%"></i></div></div>
+          <div class="skill reveal"><div class="skill-head"><span>JavaScript</span><span>75%</span></div><div class="bar"><i style="--w:75%"></i></div></div>
+          <div class="skill reveal"><div class="skill-head"><span>Dizayn</span><span>70%</span></div><div class="bar"><i style="--w:70%"></i></div></div>
+          <div class="skill reveal"><div class="skill-head"><span>Ingliz tili</span><span>65%</span></div><div class="bar"><i style="--w:65%"></i></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="loyihalar" class="section">
+      <div class="container">
+        <h2 class="reveal">Loyihalar</h2>
+        <div class="cards">
+          <article class="card reveal">
+            <div class="card-icon">🌐</div>
+            <h3>Shaxsiy sayt</h3>
+            <p>Siz hozir ko'rib turgan sayt — HTML, CSS va JavaScript yordamida yaratilgan.</p>
+            <span class="tag">Veb</span>
+          </article>
+          <article class="card reveal">
+            <div class="card-icon">📱</div>
+            <h3>Mobil ilova g'oyasi</h3>
+            <p>Kundalik vazifalarni rejalashtirish uchun qulay va sodda ilova.</p>
+            <span class="tag">Mobil</span>
+          </article>
+          <article class="card reveal">
+            <div class="card-icon">🎨</div>
+            <h3>Dizayn to'plami</h3>
+            <p>Logotiplar, bannerlar va ijtimoiy tarmoqlar uchun grafik ishlar.</p>
+            <span class="tag">Dizayn</span>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="aloqa" class="section alt">
+      <div class="container contact">
+        <h2 class="reveal">Aloqa</h2>
+        <p class="reveal">Savol yoki taklifingiz bo'lsa, xabar qoldiring!</p>
+        <form id="contact-form" class="reveal" novalidate>
+          <input type="text" name="ism" placeholder="Ismingiz" required>
+          <input type="email" name="email" placeholder="Email manzilingiz" required>
+          <textarea name="xabar" rows="5" placeholder="Xabaringiz" required></textarea>
+          <button type="submit" class="btn primary">Yuborish</button>
+          <p id="form-status" role="status"></p>
+        </form>
+        <div class="socials reveal">
+          <a href="https://t.me/" target="_blank" rel="noopener">Telegram</a>
+          <a href="https://instagram.com/" target="_blank" rel="noopener">Instagram</a>
+          <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">© <span id="year"></span> Behruz. Barcha huquqlar himoyalangan.</div>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
