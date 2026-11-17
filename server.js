@@ -445,8 +445,13 @@ route("POST", "/api/tg/webhook", async (req) => {
 route("POST", "/api/generate", async (req) => {
   const u = await auth(req);
   const body = await readBody(req);
+  // Ikki usul: "topic" — mavzu bo'yicha, "text" — foydalanuvchining o'z matnidan
+  const mode = body.mode === "text" ? "text" : "topic";
   const topic = clean(body.topic, 200);
-  if (topic.length < 3) throw new HttpError(400, "Mavzuni to‘liqroq yozing.");
+  const source = mode === "text"
+    ? String(body.source || "").replace(/\r\n?/g, "\n").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, 30000) : "";
+  if (mode === "topic" && topic.length < 3) throw new HttpError(400, "Mavzuni to‘liqroq yozing.");
+  if (mode === "text" && source.length < 200) throw new HttpError(400, "Matn juda qisqa. Kamida bir-ikki xatboshi joylang.");
   const subject = clean(body.subject, 50);
   const n = [10, 12, 15, 20].includes(Number(body.n)) ? Number(body.n) : 12;
   const lang = langOf(body.lang);
@@ -460,7 +465,8 @@ route("POST", "/api/generate", async (req) => {
   });
   let data;
   try {
-    data = Deck.normalize(await askGemini(Deck.buildPrompt(topic, subject, n, lang)), topic);
+    const prompt = mode === "text" ? Deck.buildTextPrompt(source, topic, subject, n, lang) : Deck.buildPrompt(topic, subject, n, lang);
+    data = Deck.normalize(await askGemini(prompt), topic || "Taqdimot");
   } catch (e) {
     await ref.update({ credits: FV.increment(1), used: FV.increment(-1) });   // xato bo'lsa limit qaytariladi
     if (e instanceof HttpError) {
@@ -472,7 +478,8 @@ route("POST", "/api/generate", async (req) => {
   }
   const gen = db.collection("generations").doc();
   const batch = db.batch();
-  batch.set(gen, { uid: u.uid, email: u.email, topic, title: clean(data.title, 120), subject, lang, n, createdAt: FV.serverTimestamp() });
+  batch.set(gen, { uid: u.uid, email: u.email, topic: topic || clean(data.title, 120), title: clean(data.title, 120), subject, lang, n, mode,
+    createdAt: FV.serverTimestamp() });
   batch.set(db.collection("decks").doc(gen.id), { uid: u.uid, data, lang, subject, createdAt: FV.serverTimestamp() });
   batch.set(db.doc("stats/main"), { generations: FV.increment(1) }, { merge: true });
   await batch.commit();
@@ -704,7 +711,7 @@ route("GET", "/api/admin/generations", async (req) => {
   const snap = await db.collection("generations").orderBy("createdAt", "desc").limit(60).get();
   return { items: snap.docs.map((d) => {
     const g = d.data();
-    return { id: d.id, email: g.email, topic: g.topic, title: g.title, lang: g.lang, n: g.n, createdAt: iso(g.createdAt) };
+    return { id: d.id, email: g.email, topic: g.topic, title: g.title, lang: g.lang, n: g.n, mode: g.mode || "topic", createdAt: iso(g.createdAt) };
   }) };
 });
 

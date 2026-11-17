@@ -4,6 +4,9 @@ Ilova nima qiladi:
 
 - Botga kirgan odam pastdagi **Taqdimot** tugmasini bosadi va ilova Telegram’ning o‘zida ochiladi. Odam Telegram akkaunti bilan avtomatik kiradi, ro‘yxatdan o‘tish shart emas.
 - Har bir yangi foydalanuvchiga **3 ta taqdimot bepul** (sonini admin paneldan o‘zgartirasiz).
+- Taqdimot **ikki usulda** yasaladi:
+  - **💡 Mavzu bo‘yicha** — mavzuni yozasiz, matnni AI o‘zi yozadi;
+  - **📄 O‘z matnimdan** — mustaqil ish, referat yoki konspekt matnini joylaysiz (yoki Word / .txt faylni tanlaysiz), AI uni slaydlarga bo‘lib beradi va o‘zidan yangi fakt qo‘shmaydi.
 - Tayyor taqdimot **PowerPoint, PDF, Word** yoki **rasmlar (ZIP)** ko‘rinishida **bot chatiga keladi**. Krossvord ham qo‘shsa bo‘ladi.
 - Limit tugagach, foydalanuvchi paket sotib oladi: kartangizga pul o‘tkazadi, chekni Telegram’ingizga yuboradi va ilovada so‘rov qoldiradi. Siz **Tasdiqlash**ni bosasiz va taqdimotlar uning hisobiga o‘zi qo‘shiladi.
 - **Admin panel** ham Telegram’da ochiladi: botga `/admin` yozasiz va **login va parol** bilan kirasiz.

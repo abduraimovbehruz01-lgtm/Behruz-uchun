@@ -84,6 +84,9 @@
   .seg input:checked + span { background: var(--surface); box-shadow: 0 1px 2px rgba(0,0,0,.12); color: var(--accent); font-weight: 700; }
   .seg input:focus-visible + span { outline: 2px solid var(--accent); }
 
+  .src-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .file-btn { position: relative; overflow: hidden; }
+  .file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; font-size: 0; }
   .themes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .themes label { position: relative; cursor: pointer; }
   .themes input { position: absolute; opacity: 0; inset: 0; margin: 0; }
@@ -282,8 +285,24 @@
       <form class="panel" id="form" novalidate>
         <div class="authbox" id="authBox"></div>
         <div class="field">
-          <label for="topic">Mavzu</label>
+          <span class="lbl" id="modeLbl">Qanday yasaymiz?</span>
+          <div class="seg" role="radiogroup" aria-labelledby="modeLbl" id="modeSeg">
+            <label><input type="radio" name="mode" value="topic" checked><span>💡 Mavzu bo‘yicha</span></label>
+            <label><input type="radio" name="mode" value="text"><span>📄 O‘z matnimdan</span></label>
+          </div>
+          <p class="hint" id="modeHint">AI mavzu bo‘yicha matnni o‘zi yozadi.</p>
+        </div>
+        <div class="field">
+          <label for="topic" id="topicLbl">Mavzu</label>
           <textarea id="topic" rows="2" maxlength="200" placeholder="Masalan: Amir Temur davlatining boshqaruv tizimi"></textarea>
+        </div>
+        <div class="field" id="srcBox" hidden>
+          <label for="source">Matningiz <span class="hint">— mustaqil ish, referat yoki konspekt</span></label>
+          <textarea id="source" rows="8" maxlength="30000" placeholder="Matnni shu yerga joylang yoki pastdan Word faylini tanlang. AI uni slaydlarga bo‘lib beradi va o‘zidan yangi fakt qo‘shmaydi."></textarea>
+          <div class="src-row">
+            <label class="btn btn-ghost btn-sm file-btn">📎 Word yoki .txt fayl<input type="file" id="srcFile" accept=".docx,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"></label>
+            <span class="hint" id="srcCount">0 / 30 000</span>
+          </div>
         </div>
         <div class="row2">
           <div class="field">

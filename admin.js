@@ -260,6 +260,6 @@ async function history(body) {
   const e = H.esc;
   body.innerHTML = r.items.length ? `<ul class="list">${r.items.map((g) => `<li><div class="main">
       <div class="t">${e(g.title || g.topic)}</div>
-      <div class="s">${e(g.email)} · ${e(H.fmtDate(g.createdAt))} · ${e(LANG[g.lang] || g.lang)} · ${e(g.n)} slayd</div></div></li>`).join("")}</ul>`
+      <div class="s">${g.mode === "text" ? "📄 matndan · " : ""}${e(g.email)} · ${e(H.fmtDate(g.createdAt))} · ${e(LANG[g.lang] || g.lang)} · ${e(g.n)} slayd</div></div></li>`).join("")}</ul>`
     : `<p class="empty">Hali taqdimot yasalmagan</p>`;
 }

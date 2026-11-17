@@ -429,6 +429,7 @@ function initMain() {
   } catch (e) { /* */ }
 
   form().addEventListener("submit", onGenerate);
+  initModes();
   $("dlBtn").addEventListener("click", () => download(false));
   $("cwDlBtn").addEventListener("click", () => download(true));
   $("cwBtn").addEventListener("click", onCrossword);
@@ -555,10 +556,17 @@ function setStatus(text, kind, progress) {
 async function onGenerate(ev) {
   ev.preventDefault();
   if (state.busy) return;
+  const mode = val("mode") === "text" ? "text" : "topic";
   const topic = $("topic").value.replace(/\s+/g, " ").trim();
-  if (topic.length < 3) {
+  const source = mode === "text" ? $("source").value.trim() : "";
+  if (mode === "topic" && topic.length < 3) {
     setStatus("Avval taqdimot mavzusini yozing.", "err");
     $("topic").focus();
+    return;
+  }
+  if (mode === "text" && source.length < 200) {
+    setStatus("Matn juda qisqa. Mustaqil ish yoki konspektdan kamida bir-ikki xatboshi joylang.", "err");
+    $("source").focus();
     return;
   }
   if (!state.user && !(await login())) return;
@@ -574,13 +582,14 @@ async function onGenerate(ev) {
   const started = Date.now();
   const tick = () => {
     const s = (Date.now() - started) / 1000;
-    const msg = s < 8 ? "Mavzu o‘rganilmoqda…" : s < 45 ? "Slaydlar matni yozilmoqda…" : s < 90 ? "Deyarli tayyor…" : "Biroz ko‘proq vaqt ketyapti, kuting…";
+    const msg = s < 8 ? (mode === "text" ? "Matningiz o‘qilmoqda…" : "Mavzu o‘rganilmoqda…")
+      : s < 45 ? (mode === "text" ? "Matn slaydlarga bo‘linmoqda…" : "Slaydlar matni yozilmoqda…") : s < 90 ? "Deyarli tayyor…" : "Biroz ko‘proq vaqt ketyapti, kuting…";
     setStatus(`${msg} ${Math.round(s)} soniya. Sahifani yopmang.`, "busy", 96 * (1 - Math.exp(-s / 35)));
   };
   tick();
   const timer = setInterval(tick, 1000);
   try {
-    const r = await api("/api/generate", { body: { topic, subject: $("subject").value.trim(), n, lang } });
+    const r = await api("/api/generate", { body: { mode, topic, source, subject: $("subject").value.trim(), n, lang } });
     state.data = r.data;
     state.deckId = r.id;
     state.lang = lang;
@@ -636,6 +645,87 @@ async function onCrossword() {
     state.busy = false;
     $("cwBtn").disabled = $("goBtn").disabled = false;
   }
+}
+
+// ------------------------------------------------------------ 2-usul: o'z matnidan
+const MODE_HINT = {
+  topic: "AI mavzu bo‘yicha matnni o‘zi yozadi.",
+  text: "Matningizni joylang — AI uni slaydlarga bo‘lib, reja va xulosa qo‘shadi. Yangi fakt qo‘shmaydi.",
+};
+
+function initModes() {
+  const apply = () => {
+    const text = val("mode") === "text";
+    $("srcBox").hidden = !text;
+    $("modeHint").textContent = MODE_HINT[text ? "text" : "topic"];
+    $("topicLbl").innerHTML = text ? 'Mavzu <span class="hint">(ixtiyoriy — bo‘lmasa matndan olinadi)</span>' : "Mavzu";
+    $("topic").rows = text ? 1 : 2;
+    $("topic").placeholder = text ? "Masalan: Amir Temur davlati" : "Masalan: Amir Temur davlatining boshqaruv tizimi";
+  };
+  $("modeSeg").addEventListener("change", apply);
+  const count = () => { $("srcCount").textContent = `${$("source").value.length.toLocaleString("ru-RU").replace(/[\u00a0\u202f]/g, " ")} / 30 000`; };
+  $("source").addEventListener("input", count);
+  $("srcFile").addEventListener("change", async () => {
+    const f = $("srcFile").files[0];
+    $("srcFile").value = "";
+    if (!f) return;
+    const name = f.name.toLowerCase();
+    try {
+      let text;
+      if (name.endsWith(".txt")) text = await f.text();
+      else if (name.endsWith(".docx")) text = await readDocx(f);
+      else { setStatus("Faqat Word (.docx) yoki .txt fayl. PDF bo‘lsa, matnni nusxalab joylang.", "err"); return; }
+      text = text.trim();
+      if (!text) { setStatus("Faylda matn topilmadi.", "err"); return; }
+      const cut = text.length > 30000;
+      $("source").value = text.slice(0, 30000);
+      count();
+      if (!$("topic").value.trim()) $("topic").value = text.split("\n").map((l) => l.trim()).find((l) => l.length > 3 && l.length < 150) || "";
+      setStatus(cut ? "✓ Fayl o‘qildi. Matn juda uzun edi — dastlabki 30 000 belgisi olindi." : "✓ Fayl o‘qildi. Endi «Taqdimot yasash»ni bosing.", "ok");
+    } catch (e) {
+      console.error(e);
+      setStatus("Faylni o‘qib bo‘lmadi. Matnni nusxalab, shu yerga joylang.", "err");
+    }
+  });
+  apply();
+  count();
+}
+
+// Word (.docx) fayldan matnni olish: .docx — bu ZIP arxiv, matn word/document.xml ichida
+async function readDocx(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("zip emas");
+  const total = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const dec = new TextDecoder();
+  for (let k = 0; k < total; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true);
+    const csize = dv.getUint32(p + 20, true);
+    const nlen = dv.getUint16(p + 28, true), xlen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+    const off = dv.getUint32(p + 42, true);
+    const name = dec.decode(buf.subarray(p + 46, p + 46 + nlen));
+    if (name === "word/document.xml") {
+      const start = off + 30 + dv.getUint16(off + 26, true) + dv.getUint16(off + 28, true);
+      const data = buf.subarray(start, start + csize);
+      let xml;
+      if (method === 0) xml = dec.decode(data);
+      else if (method === 8) {
+        if (typeof DecompressionStream === "undefined") throw new Error("DecompressionStream yo‘q");
+        xml = await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).text();
+      } else throw new Error("siqish usuli " + method);
+      return xml.replace(/<w:tab\/>/g, "\t").replace(/<w:br[^>]*\/>/g, "\n").replace(/<\/w:p>/g, "\n").replace(/<[^>]+>/g, "")
+        .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&")
+        .replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    }
+    p += 46 + nlen + xlen + clen;
+  }
+  throw new Error("word/document.xml topilmadi");
 }
 
 // ------------------------------------------------------------ yuklab olish
