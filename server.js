@@ -19,7 +19,7 @@ const Deck = require("./deck.js");
 const PORT = Number(process.env.PORT) || 8080;
 const GEMINI_KEY = (process.env.GEMINI_API_KEY || "").trim();
 const GEMINI_BASE = (process.env.GEMINI_BASE || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "");
-const MODELS = (process.env.GEMINI_MODEL || "gemini-3.5-flash,gemini-flash-latest,gemini-3.1-flash-lite,gemini-2.5-flash")
+const MODELS = (process.env.GEMINI_MODEL || "gemini-flash-latest,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-flash-lite-latest,gemini-2.5-flash")
   .split(",").map((s) => s.trim()).filter(Boolean);
 const ADMIN_LOGIN = (process.env.ADMIN_LOGIN || "").trim();
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
@@ -330,6 +330,13 @@ async function callModel(model, prompt, withThinking) {
   const txt = await r.text();
   if (r.status === 400 && /API key not valid|API_KEY_INVALID/i.test(txt))
     throw new HttpError(500, "Gemini kaliti noto‘g‘ri. Admin GEMINI_API_KEY ni tekshirishi kerak.", "ai_key");
+  // Kalitning o'zi ishlamasa (401 yoki API o'chirilgan) — boshqa modellarni sinash befoyda
+  if (r.status === 401 || (r.status === 403 && /SERVICE_DISABLED|API_KEY_INVALID|API_KEY_SERVICE_BLOCKED/i.test(txt))) {
+    log("gemini kalit xatosi:", r.status, txt.slice(0, 300).replace(/\s+/g, " "));
+    throw new HttpError(500, "Gemini kaliti ishlamadi. Admin kalitni tekshirishi kerak.", "ai_key");
+  }
+  if (r.status === 400 && /location is not supported/i.test(txt))
+    throw new HttpError(500, "Gemini bu server joylashgan mamlakatda ishlamaydi. Admin serverni boshqa hududga ko‘chirishi kerak.", "ai_key");
   if (r.status === 400 && gen.thinkingConfig) return callModel(model, prompt, false);
   if (!r.ok) throw new Error(`${model} ${r.status}: ${txt.slice(0, 200).replace(/\s+/g, " ")}`);
   let j = {};
