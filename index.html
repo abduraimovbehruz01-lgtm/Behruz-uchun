@@ -84,6 +84,14 @@
   .seg input:checked + span { background: var(--surface); box-shadow: 0 1px 2px rgba(0,0,0,.12); color: var(--accent); font-weight: 700; }
   .seg input:focus-visible + span { outline: 2px solid var(--accent); }
 
+  .sample-card { display: flex; gap: 10px; align-items: center; padding: 12px; border-radius: 12px; background: var(--accent-soft); }
+  .sample-card .main { flex: 1; min-width: 0; }
+  .sample-card b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sample-card p { margin: 2px 0 0; }
+  .ref { border-top: 1px solid color-mix(in srgb, var(--accent) 20%, transparent); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .ref-acts { display: flex; gap: 8px; }
+  .ref-acts .btn { flex: 1; }
+  .pay-tg { display: flex; flex-direction: column; gap: 8px; }
   .src-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
   .file-btn { position: relative; overflow: hidden; }
   .file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; font-size: 0; }
@@ -287,14 +295,24 @@
         <div class="field">
           <span class="lbl" id="modeLbl">Qanday yasaymiz?</span>
           <div class="seg" role="radiogroup" aria-labelledby="modeLbl" id="modeSeg">
-            <label><input type="radio" name="mode" value="topic" checked><span>💡 Mavzu bo‘yicha</span></label>
-            <label><input type="radio" name="mode" value="text"><span>📄 O‘z matnimdan</span></label>
+            <label><input type="radio" name="mode" value="topic" checked><span>💡 Mavzu</span></label>
+            <label><input type="radio" name="mode" value="text"><span>📄 Matndan</span></label>
+            <label><input type="radio" name="mode" value="sample"><span>🎯 Namuna</span></label>
           </div>
           <p class="hint" id="modeHint">AI mavzu bo‘yicha matnni o‘zi yozadi.</p>
         </div>
         <div class="field">
           <label for="topic" id="topicLbl">Mavzu</label>
           <textarea id="topic" rows="2" maxlength="200" placeholder="Masalan: Amir Temur davlatining boshqaruv tizimi"></textarea>
+        </div>
+        <div class="field" id="sampleBox" hidden>
+          <span class="lbl">Namuna <span class="hint">— o‘qituvchi bergan yoki sizga yoqqan taqdimot</span></span>
+          <div class="sample-card" id="sampleCard" hidden>
+            <div class="main"><b id="sampleName"></b><p class="fine" id="sampleSum"></p></div>
+            <button type="button" class="btn btn-ghost btn-sm" id="sampleChange">Almashtirish</button>
+          </div>
+          <label class="btn btn-ghost btn-block file-btn" id="sampleBtn">📎 Namuna faylini tanlash<input type="file" id="sampleFile" accept=".pptx,.pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.wordprocessingml.document"></label>
+          <p class="hint" id="sampleHint">PowerPoint (.pptx), PDF yoki Word (.docx). Namuna saqlanib qoladi — keyingi safar qayta yuklash shart emas.</p>
         </div>
         <div class="field" id="srcBox" hidden>
           <label for="source">Matningiz <span class="hint">— mustaqil ish, referat yoki konspekt</span></label>
@@ -314,7 +332,7 @@
             <input id="author" type="text" maxlength="60" placeholder="Ali Valiyev" autocomplete="name">
           </div>
         </div>
-        <div class="field">
+        <div class="field" id="nField">
           <span class="lbl" id="nLbl">Slaydlar soni</span>
           <div class="seg" role="radiogroup" aria-labelledby="nLbl">
             <label><input type="radio" name="n" value="10"><span>10</span></label>
@@ -369,11 +387,12 @@
 
       <div class="status" id="status">
         <p id="stText"></p>
+        <a class="btn btn-primary btn-sm" id="stLink" href="#" target="_blank" rel="noopener" hidden style="margin-top:10px"></a>
         <div class="bar"><i id="barFill"></i></div>
       </div>
 
       <ol class="how" id="how">
-        <li><b>Google bilan kiring</b> — dastlabki <span class="freeN">3</span> ta taqdimot bepul.</li>
+        <li><b>Kiring</b> — yangi foydalanuvchiga <span class="freeN">3</span> ta jeton bepul.</li>
         <li><b>Mavzuni yozing</b> va «Taqdimot yasash»ni bosing — 1–2 daqiqa.</li>
         <li><b>Yuklab oling</b>: PowerPoint, PDF, Word yoki rasmlar. Krossvord ham qo‘shsa bo‘ladi.</li>
       </ol>
@@ -407,11 +426,15 @@
     </div>
     <div class="pkgs" id="pkgs" role="radiogroup" aria-label="Paket"></div>
     <div id="payInfo"></div>
-    <div class="field">
+    <div class="field" id="payNoteBox">
       <label for="payNote">Izoh <span class="hint">— to‘lov vaqti yoki kartangizning oxirgi 4 raqami</span></label>
       <input id="payNote" type="text" maxlength="300" placeholder="Masalan: 14:20 da o‘tkazdim, karta …4417">
     </div>
     <button class="btn btn-primary btn-block" id="paySend" type="button">So‘rov yuborish</button>
+    <div class="pay-tg" id="payTg" hidden>
+      <button class="btn btn-primary btn-block" id="payStars" type="button">⭐ Stars bilan to‘lash</button>
+      <button class="btn btn-ghost btn-block" id="payReceipt" type="button">📸 Kartaga to‘lab, chekni botga yuborish</button>
+    </div>
     <p class="fine" id="payMsg" role="status"></p>
     <div id="myPays" hidden>
       <b style="font-size:14px">Mening so‘rovlarim</b>

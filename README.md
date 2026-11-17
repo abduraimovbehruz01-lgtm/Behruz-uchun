@@ -3,12 +3,17 @@
 Ilova nima qiladi:
 
 - Botga kirgan odam pastdagi **Taqdimot** tugmasini bosadi va ilova Telegram’ning o‘zida ochiladi. Odam Telegram akkaunti bilan avtomatik kiradi, ro‘yxatdan o‘tish shart emas.
-- Har bir yangi foydalanuvchiga **3 ta taqdimot bepul** (sonini admin paneldan o‘zgartirasiz).
-- Taqdimot **ikki usulda** yasaladi:
-  - **💡 Mavzu bo‘yicha** — mavzuni yozasiz, matnni AI o‘zi yozadi;
-  - **📄 O‘z matnimdan** — mustaqil ish, referat yoki konspekt matnini joylaysiz (yoki Word / .txt faylni tanlaysiz), AI uni slaydlarga bo‘lib beradi va o‘zidan yangi fakt qo‘shmaydi.
+- Hisob **jetonlarda**: har bir yangi foydalanuvchiga **3 ta jeton bepul** (sonini admin paneldan o‘zgartirasiz).
+- Taqdimot **uch usulda** yasaladi:
+  - **💡 Mavzu bo‘yicha** (1 jeton) — mavzuni yozasiz, matnni AI o‘zi yozadi;
+  - **📄 O‘z matnimdan** (1 jeton) — mustaqil ish, referat yoki konspekt matnini joylaysiz (yoki Word / .txt faylni tanlaysiz), AI uni slaydlarga bo‘lib beradi va o‘zidan yangi fakt qo‘shmaydi;
+  - **🎯 Namunadek** (2 jeton) — namuna taqdimotni (PowerPoint, PDF yoki Word) yuklaysiz va yangi mavzuni yozasiz. AI namunaning tuzilishi, slaydlar tartibi va uslubini takrorlaydi, dizayn namunaning ranglarida bo‘ladi. Namuna saqlanib qoladi.
+- **Do‘st taklif qilish:** har kimning o‘z havolasi bor; har 5 ta yangi do‘st uchun +2 jeton (admin paneldan o‘zgartiriladi).
 - Tayyor taqdimot **PowerPoint, PDF, Word** yoki **rasmlar (ZIP)** ko‘rinishida **bot chatiga keladi**. Krossvord ham qo‘shsa bo‘ladi.
-- Limit tugagach, foydalanuvchi paket sotib oladi: kartangizga pul o‘tkazadi, chekni Telegram’ingizga yuboradi va ilovada so‘rov qoldiradi. Siz **Tasdiqlash**ni bosasiz va taqdimotlar uning hisobiga o‘zi qo‘shiladi.
+- Jeton tugagach, foydalanuvchi paket sotib oladi. Ikki yo‘l bor:
+  - **📸 Karta orqali:** ilovada paketni tanlaydi → bot unga karta raqamini yuboradi → u chek rasmini botga yuboradi → chek sizga Telegram’da **✅ / ❌** tugmalari bilan keladi → ✅ ni bossangiz, jetonlar avtomatik tushadi va foydalanuvchiga xabar boradi.
+  - **⭐ Telegram Stars:** to‘lov Telegram ichida, jeton darhol tushadi, siz hech narsa qilmaysiz.
+- **Hammaga xabar** yuborish va **majburiy kanal obunasi** (ixtiyoriy) ham bor.
 - **Admin panel** ham Telegram’da ochiladi: botga `/admin` yozasiz va **login va parol** bilan kirasiz.
 
 **Kerak bo‘ladi:** iPhone (Safari va Telegram), Gmail akkaunt va 30 daqiqa vaqt. Hamma xizmatlar bepul.
@@ -111,10 +116,13 @@ Eski botingizdan foydalanmoqchi bo‘lsangiz: `/mybots` → bot → **API Token*
 3. **Admin panel:** botga `/admin` yozing → **⚙️ Admin panelni ochish** → `ADMIN_LOGIN` va `ADMIN_PASSWORD` ni kiriting.
    - Telegram 7 kun eslab qoladi. Ilovaning yuqorisida ham **⚙️ Admin** tugmasi chiqadi — u faqat sizga ko‘rinadi.
    - Kerak bo‘lsa, admin panel Safari’da ham ochiladi: `https://taqdimot-abcd.onrender.com/admin`.
+   - Admin panelni **bot ichida** ochganingizda Telegram akkauntingiz avtomatik ulanadi — foydalanuvchilar yuborgan cheklar shu akkauntga keladi. Ulanganlar ro‘yxati: **Sozlamalar → Cheklar keladigan Telegram akkauntlar**.
 4. **Admin → Sozlamalar**:
    - karta raqami va karta egasi;
-   - Telegram username (chek shu yerga yuboriladi);
-   - paketlar va narxlar.
+   - yordam uchun Telegram username;
+   - paketlar: jeton soni, narxi (so‘m) va ⭐ Stars narxi (0 bo‘lsa, Stars bilan sotilmaydi);
+   - do‘st taklif qilish bonusi (har nechta do‘stga nechta jeton);
+   - majburiy kanal (ixtiyoriy): `@kanalingiz`. Botni kanalga **admin** qilib qo‘shing, aks holda tekshirib bo‘lmaydi.
 5. **Saqlash**ni bosing.
 6. Bot manzilini (`https://t.me/BOT_USERNAME`) do‘stlaringizga yuboring — hamma shu orqali foydalanadi.
 
@@ -123,20 +131,23 @@ Eski botingizdan foydalanmoqchi bo‘lsangiz: `/mybots` → bot → **API Token*
 ## Admin sifatida kundalik ish
 
 - **Admin panelni ochish:** botga `/admin` yozing (yoki ilovadagi **⚙️ Admin** tugmasi).
-- **To‘lov kelganda:** Telegram’da chekni ko‘ring → **Admin → To‘lovlar** → summa va vaqtni solishtiring → **Tasdiqlash**ni bosing (tasdiqlash uchun ikki marta bosiladi). Taqdimotlar foydalanuvchiga o‘zi qo‘shiladi.
-- **Chek topilmasa:** **Rad etish** → sababini yozing. Foydalanuvchi sababni o‘z so‘rovlari ro‘yxatida ko‘radi.
-- **Qo‘lda qo‘shish yoki ayirish:** **Foydalanuvchilar** → `@username` boshini yozing → **+1 / +5 / −1** yoki istalgan son. Username’i yo‘q odamlar `tg:raqam` bo‘lib ko‘rinadi.
+- **Chek kelganda:** bot sizga chek rasmini yuboradi. Kartangizga pul tushganini tekshiring → **✅ Tasdiqlash** (jetonlar avtomatik tushadi) yoki **❌ Rad etish**. Xuddi shuni **Admin → To‘lovlar**da ham qilsa bo‘ladi (**🧾 Chekni ko‘rish** tugmasi bor).
+- **Stars to‘lovlari** o‘zi tushadi, sizga faqat xabar keladi. Stars’ni @BotFather → botingiz → **Balance** bo‘limida ko‘rasiz va yechib olasiz.
+- **Hammaga xabar:** **Admin → 📣 Xabar** → matnni yozing → ikki marta bosing.
+- **Qo‘lda qo‘shish yoki ayirish:** **Foydalanuvchilar** → `@username` yoki Telegram ID’ni yozing → **+1 / +5 / −1** yoki istalgan son.
 - **Suiiste’mol qilgan odamni bloklash:** Foydalanuvchilar → **Bloklash**.
-- **Statistika:** foydalanuvchilar soni, jami va bugun yasalgan taqdimotlar, daromad.
+- **Statistika:** foydalanuvchilar soni, jami va bugun yasalgan taqdimotlar, daromad (karta) va tushgan ⭐ Stars.
 - **Tarix:** kim qaysi mavzuda taqdimot yasagani.
 - **Admin parolini o‘zgartirish:** Render → Environment → `ADMIN_PASSWORD` → yangi parol → **Save**. Barcha qurilmalardagi eski admin kirishlari o‘zi bekor bo‘ladi.
 
 ## Bilish kerak bo‘lgan cheklovlar
 
-- **Render bepul tarifi:** 15 daqiqa hech kim foydalanmasa, server «uxlaydi». Shundan keyin bot birinchi xabarga va ilova ochilishiga taxminan 1 daqiqa ketadi. Doim tez ishlashi uchun Render’da pullik tarifga o‘tish mumkin (ixtiyoriy).
+- **Render bepul tarifi:** 15 daqiqa hech kim foydalanmasa, server «uxlaydi». Buning oldini olish uchun server o‘zini har 10 daqiqada uyg‘otib turadi (`KEEP_AWAKE`), shuning uchun bot tez javob beradi. Bepul tarif oyiga 750 soat beradi — bitta server uchun yetadi. Render baribir qayta ishga tushirsa, birinchi ochilishga 1 daqiqagacha ketishi mumkin.
+- **Stars qoidasi:** Telegram raqamli mahsulotlar uchun bot ichida Stars to‘lovini talab qiladi. Karta orqali to‘lov ham ishlaydi, lekin Stars’ni yoqib qo‘yish xavfsizroq.
 - **Gemini bepul limiti:** kunlik va daqiqalik so‘rovlar soni cheklangan. Bir vaqtda ko‘p odam yasasa, «AI hozir band» xabari chiqadi. Bunda foydalanuvchining limiti qaytariladi. Ko‘proq kerak bo‘lsa, AI Studio’da to‘lovni (billing) yoqasiz — bu pullik.
 - **Bir nechta akkaunt:** bitta odam bir nechta Telegram akkaunt bilan bepul taqdimotlarni qayta olishi mumkin. Shubhali akkauntlarni bloklaysiz yoki bepul sonini kamaytirasiz.
-- **Hisob-kitob:** ilova to‘lovni o‘zi tekshirmaydi. Pul kelganini siz kartangizdan ko‘rib tasdiqlaysiz.
+- **Hisob-kitob:** karta to‘lovini ilova o‘zi tekshirmaydi. Pul kelganini siz kartangizdan ko‘rib, ✅ ni bosasiz. Stars to‘lovini Telegram tekshiradi.
+- **Namunadek usul:** eski `.ppt` formatini o‘qib bo‘lmaydi — PowerPoint’da PDF yoki .pptx qilib saqlash kerak. Namunadagi rasmlar ko‘chirilmaydi, faqat tuzilish, uslub va ranglar olinadi.
 - **Admin himoyasi:** bitta manzildan 5 marta noto‘g‘ri parol kiritilsa, 15 daqiqaga bloklanadi. Hammasi bo‘lib 50 ta xato urinish bo‘lsa, admin kirishi 15 daqiqaga hamma uchun yopiladi.
 - **Brauzerda ochilsa:** server manzili Safari’da ochilsa, «Telegram’da ochish» tugmasi chiqadi. Ilovaning o‘zi faqat bot ichida ishlaydi (admin panel bundan mustasno).
 - **Firebase:** bepul (Spark) reja bu ilova uchun yetarli.
@@ -167,6 +178,7 @@ GitHub → `taqdimot` → **Add file → Upload files** → yangi faylni yuklang
 | `GEMINI_MODEL` | Qaysi Gemini modellari navbat bilan sinaladi (vergul bilan) | `gemini-3.8-flash,gemini-flash-latest,gemini-3.5-flash,gemini-4-hydrogen,gemini-3.5-flash-lite,gemini-flash-lite-latest` |
 | `CROSSWORD_DAILY` | Bir foydalanuvchi kuniga nechta krossvord tuza oladi | `5` |
 | `SITE_URL` | Server manzili (bot tugmalari uchun). Render o‘zi beradi — faqat o‘z domeningiz bo‘lsa yozasiz | Render manzili |
+| `KEEP_AWAKE` | Server o‘zini har 10 daqiqada «uyg‘otib» turadi — bot birinchi bosishda ham tez javob beradi. `off` yozilsa, o‘chadi | `on` |
 | `TELEGRAM_WEBHOOK` | `off` yozilsa, server bot xabarlariga javob bermaydi (faqat menyu tugmasini sozlaydi) | `on` |
 | `FIREBASE_WEB_CONFIG` | Keyinchalik Telegram’dan tashqari oddiy sayt (Google bilan kirish) ham kerak bo‘lsa. Buning uchun Firebase’da Google kirishni ham yoqish kerak | yo‘q |
 

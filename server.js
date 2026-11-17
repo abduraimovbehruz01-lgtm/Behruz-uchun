@@ -9,6 +9,7 @@
 "use strict";
 
 const http = require("http");
+const zlib = require("zlib");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -137,6 +138,7 @@ function verifyTelegram(raw) {
   let user = null;
   try { user = JSON.parse(p.get("user") || "null"); } catch (e) { /* pastda */ }
   if (!user || !user.id) throw new HttpError(401, "Telegram foydalanuvchisi aniqlanmadi.", "auth");
+  user.start_param = p.get("start_param") || "";
   return user;
 }
 
@@ -171,9 +173,10 @@ async function setupTelegram(attempt) {
   TG_BOT = { username: me.result.username, name: me.result.first_name };
   if (!SITE_URL) { WARN.push("Sayt manzili noma’lum — SITE_URL ni kiriting, bot tugmasi sozlanmadi"); return; }
   await tg("setChatMenuButton", { menu_button: { type: "web_app", text: "Taqdimot", web_app: { url: SITE_URL } } });
-  await tg("setMyCommands", { commands: [{ command: "start", description: "Taqdimot yasash" }] });
+  await tg("setMyCommands", { commands: [{ command: "start", description: "Taqdimot yasash" },
+    { command: "paysupport", description: "To‘lov bo‘yicha yordam" }, { command: "terms", description: "Shartlar" }] });
   if (TG_WEBHOOK) {
-    await tg("setWebhook", { url: SITE_URL + "/api/tg/webhook", secret_token: TG_SECRET, allowed_updates: ["message"], drop_pending_updates: true });
+    await tg("setWebhook", { url: SITE_URL + "/api/tg/webhook", secret_token: TG_SECRET, allowed_updates: ["message", "callback_query", "pre_checkout_query"], drop_pending_updates: true });
   }
   log(`Telegram bot ulandi: @${TG_BOT.username} → ${SITE_URL}`);
 }
@@ -202,13 +205,19 @@ const DEFAULT_SETTINGS = {
   cardNumber: "",
   cardHolder: "",
   telegram: "",
-  note: "To‘lov qilgach, chekni (skrinshot) Telegram orqali yuboring va pastdagi formani to‘ldiring. Odatda bir necha soat ichida tasdiqlanadi.",
+  note: "To‘lov qilgach, chek rasmini (skrinshot) botga yuboring. Admin tasdiqlashi bilan jetonlar hisobingizga tushadi.",
   packages: [
-    { id: "p5", title: "5 ta taqdimot", credits: 5, price: 10000 },
-    { id: "p15", title: "15 ta taqdimot", credits: 15, price: 25000 },
-    { id: "p40", title: "40 ta taqdimot", credits: 40, price: 50000 },
+    { id: "p5", title: "5 jeton", credits: 5, price: 10000, stars: 50 },
+    { id: "p15", title: "15 jeton", credits: 15, price: 25000, stars: 125 },
+    { id: "p40", title: "40 jeton", credits: 40, price: 50000, stars: 250 },
   ],
+  refEvery: 5,          // har nechta taklif qilingan do'st uchun
+  refBonus: 2,          // necha jeton beriladi
+  requiredChannel: "",  // masalan @kanal — bo'sh bo'lsa, obuna talab qilinmaydi
+  adminChats: [],       // cheklar keladigan Telegram akkauntlar [{id, name}]
 };
+// Har bir usul necha jeton turadi
+const COST = { topic: 1, text: 1, sample: 2 };
 
 // ------------------------------------------------------------------ yordamchilar
 class HttpError extends Error {
@@ -231,13 +240,14 @@ function send(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
-function readBody(req) {
+function readBody(req, limit) {
+  limit = limit || 200 * 1024;
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on("data", (c) => {
       size += c.length;
-      if (size > 200 * 1024) { reject(new HttpError(413, "So‘rov juda katta.")); req.destroy(); return; }
+      if (size > limit) { reject(new HttpError(413, "Fayl yoki so‘rov juda katta.")); req.destroy(); return; }
       chunks.push(c);
     });
     req.on("end", () => {
@@ -257,6 +267,7 @@ async function auth(req) {
     return {
       uid: "tg_" + t.id, tgId: t.id, tg: true, email: uname ? "@" + uname : "tg:" + t.id,
       name: clean([t.first_name, t.last_name].filter(Boolean).join(" "), 80), picture: clean(t.photo_url, 500),
+      startParam: clean(t.start_param, 64),
     };
   }
   const token = h.startsWith("Bearer ") ? h.slice(7) : "";
@@ -284,27 +295,58 @@ async function getSettings(force) {
 
 const publicSettings = (s) => ({
   freeCredits: s.freeCredits, cardNumber: s.cardNumber, cardHolder: s.cardHolder,
-  telegram: s.telegram, note: s.note, packages: s.packages,
+  telegram: s.telegram, note: s.note, packages: s.packages, refEvery: s.refEvery, refBonus: s.refBonus,
+  requiredChannel: s.requiredChannel || "", cost: COST,
 });
 
-// Foydalanuvchi yozuvi: birinchi kirishda bepul limit beriladi
+// Foydalanuvchi yozuvi: birinchi kirishda bepul jetonlar beriladi.
+// Tezlik uchun: mavjud foydalanuvchi oddiy o'qiladi, "oxirgi kirish" esa 30 daqiqada bir yangilanadi.
 async function ensureUser(u) {
   const ref = db.collection("users").doc(u.uid);
+  const snap = await ref.get();
+  if (snap.exists) {
+    const d = snap.data();
+    const seen = d.lastSeen && typeof d.lastSeen.toDate === "function" ? d.lastSeen.toDate().getTime() : 0;
+    if (Date.now() - seen > 30 * 60000 || d.name !== u.name || d.email !== u.email)
+      ref.update({ lastSeen: FV.serverTimestamp(), email: u.email, name: u.name, photo: u.picture }).catch((e) => log("lastSeen:", e.message));
+    return d;
+  }
   const s = await getSettings();
-  return db.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    if (snap.exists) {
-      tx.update(ref, { lastSeen: FV.serverTimestamp(), email: u.email, name: u.name, photo: u.picture });
-      return snap.data();
-    }
+  // Kim taklif qilgan: Mini App havolasidagi start_param yoki botdagi /start ref_... (pendingRefs)
+  let refUid = /^ref_(tg_\d+|[\w-]{6,40})$/.exec(u.startParam || "") ? u.startParam.slice(4) : "";
+  if (!refUid && u.tg) {
+    const pr = await db.collection("pendingRefs").doc(String(u.tgId)).get().catch(() => null);
+    if (pr && pr.exists) refUid = pr.data().ref || "";
+  }
+  if (refUid === u.uid) refUid = "";
+  const created = await db.runTransaction(async (tx) => {
+    const again = await tx.get(ref);
+    if (again.exists) return { d: again.data(), isNew: false };
+    const rref = refUid ? db.collection("users").doc(refUid) : null;
+    const rs = rref ? await tx.get(rref) : null;
     const d = {
       email: u.email, name: u.name, photo: u.picture, credits: Number(s.freeCredits) || 0, used: 0,
       blocked: false, createdAt: FV.serverTimestamp(), lastSeen: FV.serverTimestamp(),
     };
+    let bonus = 0;
+    if (rs && rs.exists) {
+      d.referredBy = refUid;
+      const count = (rs.data().refCount || 0) + 1;
+      const every = Math.max(1, Number(s.refEvery) || 5);
+      bonus = count % every === 0 ? Math.max(0, Number(s.refBonus) || 0) : 0;
+      tx.update(rref, { refCount: count, credits: FV.increment(bonus), refEarned: FV.increment(bonus) });
+    }
     tx.set(ref, d);
     tx.set(db.doc("stats/main"), { users: FV.increment(1) }, { merge: true });
-    return d;
+    return { d, isNew: true, bonus };
   });
+  if (created.isNew && created.d.referredBy && created.d.referredBy.startsWith("tg_")) {
+    const rid = created.d.referredBy.slice(3);
+    tg("sendMessage", { chat_id: rid, text: created.bonus
+      ? `🎉 Siz taklif qilgan do‘stlardan yana biri qo‘shildi! Hisobingizga +${created.bonus} jeton tushdi.`
+      : `👥 Siz taklif qilgan do‘stingiz (${u.name || "yangi foydalanuvchi"}) ilovaga qo‘shildi.` });
+  }
+  return created.d;
 }
 
 // ------------------------------------------------------------------ Gemini
@@ -320,11 +362,13 @@ function extractJson(text) {
 
 async function callModel(model, prompt, withThinking) {
   const gen = { responseMimeType: "application/json", maxOutputTokens: 30000 };
-  if (withThinking && /^gemini-[3-9]/.test(model)) gen.thinkingConfig = { thinkingLevel: "low" };
+  // Tezlik uchun: Flash modellarda "minimal" fikrlash, boshqalarida "low". Model qo'llamasa — 400 → fikrlashsiz qayta.
+  if (withThinking && /^gemini-([3-9]|flash)/.test(model)) gen.thinkingConfig = { thinkingLevel: /flash/.test(model) ? "minimal" : "low" };
+  const parts = Array.isArray(prompt) ? prompt : [{ text: prompt }];
   const r = await fetch(`${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY },
-    body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: gen }),
+    body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: gen }),
     signal: AbortSignal.timeout(170000),
   });
   const txt = await r.text();
@@ -402,13 +446,81 @@ route("GET", "/api/config", async () => {
   return { firebase: GOOGLE ? WEB_CONFIG : null, settings: publicSettings(s), telegram: TG_BOT ? { bot: TG_BOT.username } : null, warnings: [] };
 });
 
+const sampleInfo = (sm) => (sm && sm.profile ? {
+  name: sm.name, kind: sm.kind, summary: sm.profile.summary_uz || "", slideCount: sm.profile.slide_count,
+  contentSlides: sm.profile.content_slides, colors: sm.colors || null,
+} : null);
+
 route("GET", "/api/me", async (req) => {
   const u = await auth(req);
   const d = await ensureUser(u);
   return {
     uid: u.uid, email: u.email, name: u.name, photo: u.picture, credits: d.credits || 0, used: d.used || 0,
-    blocked: !!d.blocked, tg: !!u.tg,
+    blocked: !!d.blocked, tg: !!u.tg, refCount: d.refCount || 0, refEarned: d.refEarned || 0,
+    refLink: TG_BOT ? `https://t.me/${TG_BOT.username}?start=ref_${u.uid}` : null, sample: sampleInfo(d.sample),
   };
+});
+
+// Majburiy kanal obunasi (sozlamada kanal ko'rsatilgan bo'lsa). Natija 30 daqiqa eslab qolinadi.
+const subCache = new Map();
+async function checkChannel(u) {
+  const s = await getSettings();
+  const ch = String(s.requiredChannel || "").trim();
+  if (!ch || !u.tg || !TG_TOKEN) return;
+  const key = u.uid + "|" + ch;
+  if ((subCache.get(key) || 0) > Date.now()) return;
+  const r = await tg("getChatMember", { chat_id: ch, user_id: u.tgId });
+  if (!r.ok) { log("kanal tekshiruvi:", r.description); return; }   // bot kanalga admin qilinmagan — foydalanuvchini to'xtatmaymiz
+  const st = r.result && r.result.status;
+  if (["creator", "administrator", "member"].includes(st) || (st === "restricted" && r.result.is_member)) {
+    subCache.set(key, Date.now() + 30 * 60000);
+    if (subCache.size > 20000) subCache.clear();
+    return;
+  }
+  throw new HttpError(403, `Davom etish uchun ${ch} kanaliga obuna bo‘ling, keyin qayta bosing.`, "need_sub");
+}
+
+// ---- 3-usul uchun namuna: yuklash, tahlil qilish, saqlash
+route("POST", "/api/sample", async (req) => {
+  const u = await auth(req);
+  const body = await readBody(req, 12 * 1024 * 1024);
+  const kind = ["pptx", "docx", "pdf"].includes(body.kind) ? body.kind : null;
+  if (!kind) throw new HttpError(400, "Namuna PowerPoint (.pptx), PDF yoki Word (.docx) bo‘lishi kerak.");
+  const name = clean(body.name, 120) || "namuna";
+  const text = kind === "pdf" ? "" : String(body.text || "").replace(/\r\n?/g, "\n").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, 40000);
+  const pdfRaw = kind === "pdf" ? String(body.pdf || "") : "";
+  if (kind === "pdf" && /^data:/.test(pdfRaw) && !/^data:application\/pdf[;,]/.test(pdfRaw)) throw new HttpError(400, "Bu PDF fayl emas.");
+  const pdf = pdfRaw.replace(/^data:[^,]*,/, "");
+  if (kind !== "pdf" && text.length < 80) throw new HttpError(400, "Namunada matn juda kam. Boshqa fayl tanlang.");
+  if (kind === "pdf" && (pdf.length < 200 || pdf.length > 11.5 * 1024 * 1024)) throw new HttpError(400, "PDF fayl bo‘sh yoki juda katta (ko‘pi bilan 8 MB).");
+  const d = await ensureUser(u);
+  if (d.blocked) throw new HttpError(403, "Hisobingiz bloklangan.", "blocked");
+  const ref = db.collection("users").doc(u.uid);
+  const day = tashkentDay();
+  const cnt = d.smDay === day ? d.smCount || 0 : 0;
+  if (cnt >= 10) throw new HttpError(429, "Bugun 10 ta namuna yukladingiz. Ertaga yana urinib ko‘ring.");
+  await ref.update({ smDay: day, smCount: cnt + 1 });
+  const prompt = Deck.buildSampleAnalysisPrompt(text);
+  const parts = kind === "pdf" ? [{ inlineData: { mimeType: "application/pdf", data: pdf } }, { text: prompt }] : prompt;
+  let profile;
+  try { profile = Deck.normalizeProfile(await askGemini(parts)); }
+  catch (e) {
+    if (e instanceof HttpError) throw e;
+    throw new HttpError(500, "Namunani tahlil qilib bo‘lmadi. Boshqa fayl bilan urinib ko‘ring.");
+  }
+  const hex = (x) => (typeof x === "string" && /^[0-9a-f]{6}$/i.test(x) ? x.toUpperCase() : null);
+  const c = body.colors || {};
+  const colors = hex(c.dark) && hex(c.accent) ? { dark: hex(c.dark), light: hex(c.light) || "F6F7FB", accent: hex(c.accent), accent2: hex(c.accent2) } : null;
+  const sample = { name, kind, profile, colors, at: FV.serverTimestamp() };
+  await ref.update({ sample });
+  return { sample: sampleInfo(sample) };
+});
+
+route("POST", "/api/sample/clear", async (req) => {
+  const u = await auth(req);
+  await ensureUser(u);
+  await db.collection("users").doc(u.uid).update({ sample: FV.delete() });
+  return { ok: true };
 });
 
 // Telegram ichida brauzer faylni saqlay olmaydi — tayyor faylni bot chatga yuboradi
@@ -437,74 +549,273 @@ route("POST", "/api/tg/send", async (req, url) => {
   return { ok: true };
 });
 
-// Bot xabarlari: /start (yoki istalgan xabar) ga "Taqdimot yasash" tugmasi bilan javob
+// ------------------------------------------------------------------ Telegram bot: xabarlar, cheklar, Stars
+const appButton = (text) => ({ inline_keyboard: [[{ text: text || "📊 Taqdimot yasash", web_app: { url: SITE_URL } }]] });
+const fmtSum = (n) => Number(n || 0).toLocaleString("ru-RU").replace(/[\u00a0\u202f]/g, " ") + " so‘m";
+const isAdminChat = (s, id) => (s.adminChats || []).some((a) => String(a.id) === String(id));
+
 route("POST", "/api/tg/webhook", async (req) => {
   if (!TG_TOKEN || !sameText(req.headers["x-telegram-bot-api-secret-token"] || "", TG_SECRET)) throw new HttpError(403, "forbidden");
   const upd = await readBody(req);
-  const msg = upd.message;
-  if (msg && msg.chat && msg.chat.type === "private" && SITE_URL && /^\/admin(@\w+)?\s*$/i.test(String(msg.text || "").trim())) {
-    // Admin panel Telegram ichida ochiladi; kirish baribir login va parol bilan
-    tg("sendMessage", {
-      chat_id: msg.chat.id,
-      text: "⚙️ Admin panel. Ochilgan oynada login va parolni kiriting — Telegram 7 kun eslab qoladi.",
-      reply_markup: { inline_keyboard: [[{ text: "⚙️ Admin panelni ochish", web_app: { url: SITE_URL + "/admin" } }]] },
-    });
-  } else if (msg && msg.chat && msg.chat.type === "private" && SITE_URL) {
-    const s = await getSettings();
-    const first = clean(msg.from && msg.from.first_name, 40);
-    tg("sendMessage", {
-      chat_id: msg.chat.id,
-      text: `Salom${first ? ", " + first : ""}! 👋\n\nMavzuni yozing — tayyor taqdimot (PowerPoint, PDF, Word) va krossvord olasiz. ` +
-        `Dastlabki ${s.freeCredits} ta taqdimot bepul.\n\nPastdagi tugmani bosing 👇`,
-      reply_markup: { inline_keyboard: [[{ text: "📊 Taqdimot yasash", web_app: { url: SITE_URL } }]] },
-    });
-  }
+  await handleUpdate(upd).catch((e) => log("bot xatosi:", e && e.stack ? e.stack : e));
   return { ok: true };
+});
+
+async function handleUpdate(upd) {
+  const s = await getSettings();
+  if (upd.pre_checkout_query) return onPreCheckout(upd.pre_checkout_query, s);
+  if (upd.callback_query) return onCallback(upd.callback_query, s);
+  const msg = upd.message;
+  if (!msg || !msg.chat || msg.chat.type !== "private" || !msg.from) return;
+  if (msg.successful_payment) return onStarsPaid(msg, s);
+  if (msg.photo || msg.document) return onReceipt(msg, s);
+  const text = String(msg.text || "").trim();
+  const cmd = (/^\/(\w+)(?:@\w+)?\s*(.*)$/.exec(text) || []);
+  if (cmd[1] === "admin" && SITE_URL) {
+    return tg("sendMessage", { chat_id: msg.chat.id,
+      text: "⚙️ Admin panel. Ochilgan oynada login va parolni kiriting — Telegram 7 kun eslab qoladi.",
+      reply_markup: { inline_keyboard: [[{ text: "⚙️ Admin panelni ochish", web_app: { url: SITE_URL + "/admin" } }]] } });
+  }
+  if (cmd[1] === "paysupport") {
+    return tg("sendMessage", { chat_id: msg.chat.id, text: `💬 To‘lov bo‘yicha savollar uchun yozing: ${s.telegram ? "@" + s.telegram : "admin"}.\n` +
+      "Jetonlar tushmagan bo‘lsa, to‘lov vaqti va chekni yuboring." });
+  }
+  if (cmd[1] === "terms") {
+    return tg("sendMessage", { chat_id: msg.chat.id, text: "📄 Shartlar: jetonlar taqdimot yasash uchun ishlatiladi. To‘langan jetonlar " +
+      "qaytarilmaydi, lekin texnik xato bo‘lsa, jeton avtomatik qaytariladi. AI yozgan matnni topshirishdan oldin tekshiring." });
+  }
+  if (cmd[1] === "start" && /^ref_[\w-]{6,40}$/.test(cmd[2] || "")) {
+    const exists = await db.collection("users").doc("tg_" + msg.from.id).get();
+    if (!exists.exists && cmd[2].slice(4) !== "tg_" + msg.from.id)
+      await db.collection("pendingRefs").doc(String(msg.from.id)).set({ ref: cmd[2].slice(4), at: FV.serverTimestamp() });
+  }
+  if (!SITE_URL) return;
+  const first = clean(msg.from.first_name, 40);
+  return tg("sendMessage", { chat_id: msg.chat.id,
+    text: `Salom${first ? ", " + first : ""}! 👋\n\nMavzuni yozing — tayyor taqdimot (PowerPoint, PDF, Word) va krossvord olasiz. ` +
+      `Yangi foydalanuvchiga ${s.freeCredits} ta jeton bepul.\n\nPastdagi tugmani bosing 👇`, reply_markup: appButton() });
+}
+
+// Chek rasmi: foydalanuvchining "chek kutilmoqda" holatidagi so'roviga biriktiriladi va adminga yuboriladi
+async function onReceipt(msg, s) {
+  const uid = "tg_" + msg.from.id;
+  const doc = msg.document;
+  if (doc && !/^image\/|application\/pdf/.test(doc.mime_type || ""))
+    return tg("sendMessage", { chat_id: msg.chat.id, text: "Chekni rasm (skrinshot) yoki PDF ko‘rinishida yuboring." });
+  const mine = await db.collection("payments").where("uid", "==", uid).get();
+  const since = Date.now() - 48 * 3600000;
+  const wait = mine.docs.map((d) => ({ id: d.id, ...d.data() }))
+    .filter((p) => p.status === "awaiting_receipt" && (!p.createdAt || !p.createdAt.toDate || p.createdAt.toDate().getTime() > since))
+    .sort((a, b) => String(iso(b.createdAt)).localeCompare(String(iso(a.createdAt))))[0];
+  if (!wait) {
+    return tg("sendMessage", { chat_id: msg.chat.id,
+      text: "Chekni qabul qilish uchun avval ilovada paketni tanlang: 🎟 tugmasi → paket → «Chekni botga yuborish».",
+      reply_markup: appButton("🎟 Paket tanlash") });
+  }
+  const receipt = msg.photo ? { type: "photo", fileId: msg.photo[msg.photo.length - 1].file_id } : { type: "document", fileId: doc.file_id };
+  await db.collection("payments").doc(wait.id).update({ status: "pending", receipt, receivedAt: FV.serverTimestamp() });
+  await tg("sendMessage", { chat_id: msg.chat.id,
+    text: `✅ Chek qabul qilindi: «${wait.title}» — ${fmtSum(wait.price)}.\nAdmin tekshirgach, jetonlar hisobingizga avtomatik tushadi va sizga xabar keladi.` });
+  const who = `${clean(msg.from.first_name, 40)}${msg.from.username ? " (@" + msg.from.username + ")" : ""} · ID ${msg.from.id}`;
+  const caption = `💳 Yangi to‘lov\n👤 ${who}\n📦 ${wait.title} — ${fmtSum(wait.price)}\n➕ ${wait.credits} jeton`;
+  const markup = { inline_keyboard: [[{ text: `✅ Tasdiqlash (+${wait.credits})`, callback_data: "pay:ok:" + wait.id },
+    { text: "❌ Rad etish", callback_data: "pay:no:" + wait.id }]] };
+  for (const a of s.adminChats || []) {
+    if (receipt.type === "photo") await tg("sendPhoto", { chat_id: a.id, photo: receipt.fileId, caption, reply_markup: markup });
+    else await tg("sendDocument", { chat_id: a.id, document: receipt.fileId, caption, reply_markup: markup });
+  }
+}
+
+// Admin Telegram'dagi tugmani bosdi
+async function onCallback(cb, s) {
+  const m = /^pay:(ok|no):([\w-]{1,60})$/.exec(cb.data || "");
+  if (!m) return tg("answerCallbackQuery", { callback_query_id: cb.id });
+  if (!isAdminChat(s, cb.from.id)) return tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Ruxsat yo‘q.", show_alert: true });
+  let note;
+  try {
+    if (m[1] === "ok") { const p = await approvePayment(m[2], "telegram"); note = `✅ Tasdiqlandi: +${p.credits} jeton qo‘shildi`; }
+    else { await rejectPayment(m[2], "Chek tasdiqlanmadi", "telegram"); note = "❌ Rad etildi"; }
+  } catch (e) {
+    return tg("answerCallbackQuery", { callback_query_id: cb.id, text: e.message, show_alert: true });
+  }
+  await tg("answerCallbackQuery", { callback_query_id: cb.id, text: note });
+  const msg = cb.message;
+  if (msg) {
+    const base = msg.caption != null ? msg.caption : msg.text || "";
+    if (msg.caption != null) await tg("editMessageCaption", { chat_id: msg.chat.id, message_id: msg.message_id, caption: `${base}\n\n${note}` });
+    else await tg("editMessageText", { chat_id: msg.chat.id, message_id: msg.message_id, text: `${base}\n\n${note}` });
+  }
+}
+
+// Stars to'lovi: Telegram to'lovdan oldin tekshiradi
+async function onPreCheckout(q, s) {
+  const [tag, uid, pkgId] = String(q.invoice_payload || "").split("|");
+  const pkg = (s.packages || []).find((p) => p.id === pkgId);
+  const ok = tag === "st" && uid === "tg_" + q.from.id && pkg && q.currency === "XTR" && Number(pkg.stars) === Number(q.total_amount);
+  return tg("answerPreCheckoutQuery", ok ? { pre_checkout_query_id: q.id, ok: true }
+    : { pre_checkout_query_id: q.id, ok: false, error_message: "Narx o‘zgargan. Ilovani yopib, qayta oching." });
+}
+
+// Stars to'landi — jeton darhol qo'shiladi (bir to'lov ikki marta hisoblanmaydi)
+async function onStarsPaid(msg, s) {
+  const sp = msg.successful_payment;
+  const [tag, uid, pkgId] = String(sp.invoice_payload || "").split("|");
+  if (tag !== "st" || uid !== "tg_" + msg.from.id) return;
+  const pkg = (s.packages || []).find((p) => p.id === pkgId) || {};
+  const credits = Number(pkg.credits) || 0;
+  const pref = db.collection("payments").doc("stars_" + String(sp.telegram_payment_charge_id).replace(/[^\w-]/g, "").slice(0, 80));
+  const added = await db.runTransaction(async (tx) => {
+    if ((await tx.get(pref)).exists) return false;
+    const uref = db.collection("users").doc(uid);
+    tx.set(pref, { uid, email: msg.from.username ? "@" + msg.from.username.toLowerCase() : "tg:" + msg.from.id, name: clean(msg.from.first_name, 80),
+      packageId: pkgId, title: pkg.title || pkgId, credits, price: 0, stars: sp.total_amount, method: "stars", status: "approved",
+      chargeId: sp.telegram_payment_charge_id, createdAt: FV.serverTimestamp(), decidedAt: FV.serverTimestamp(), decidedBy: "stars" });
+    tx.set(uref, { credits: FV.increment(credits) }, { merge: true });
+    tx.set(db.doc("stats/main"), { stars: FV.increment(sp.total_amount), approvedPayments: FV.increment(1) }, { merge: true });
+    return true;
+  });
+  if (!added) return;
+  await tg("sendMessage", { chat_id: msg.chat.id, text: `✅ To‘lov qabul qilindi! Hisobingizga +${credits} jeton qo‘shildi.`, reply_markup: appButton() });
+  for (const a of s.adminChats || [])
+    await tg("sendMessage", { chat_id: a.id, text: `⭐ Stars to‘lovi: ${clean(msg.from.first_name, 40)} — ${pkg.title || pkgId}, ${sp.total_amount} ⭐` });
+}
+
+async function notifyPayment(p, approved, reason) {
+  if (!p || !String(p.uid || "").startsWith("tg_")) return;
+  const s = await getSettings();
+  await tg("sendMessage", { chat_id: p.uid.slice(3), text: approved
+    ? `✅ To‘lovingiz tasdiqlandi! Hisobingizga +${p.credits} jeton qo‘shildi.`
+    : `❌ To‘lov tasdiqlanmadi${reason ? ": " + reason : ""}.\nSavol bo‘lsa: ${s.telegram ? "@" + s.telegram : "admin"}.`, reply_markup: appButton() });
+}
+
+async function approvePayment(id, by) {
+  const pref = db.collection("payments").doc(String(id || "x"));
+  const p = await db.runTransaction(async (tx) => {
+    const ps = await tx.get(pref);
+    if (!ps.exists) throw new HttpError(404, "So‘rov topilmadi.");
+    const p = ps.data();
+    if (!["pending", "awaiting_receipt"].includes(p.status)) throw new HttpError(400, "Bu so‘rov allaqachon ko‘rib chiqilgan.");
+    tx.set(db.collection("users").doc(p.uid), { credits: FV.increment(p.credits) }, { merge: true });
+    tx.update(pref, { status: "approved", decidedAt: FV.serverTimestamp(), decidedBy: by });
+    tx.set(db.doc("stats/main"), { revenue: FV.increment(p.price || 0), approvedPayments: FV.increment(1) }, { merge: true });
+    return p;
+  });
+  notifyPayment(p, true).catch(() => {});
+  return p;
+}
+
+async function rejectPayment(id, reason, by) {
+  const pref = db.collection("payments").doc(String(id || "x"));
+  const p = await db.runTransaction(async (tx) => {
+    const ps = await tx.get(pref);
+    if (!ps.exists) throw new HttpError(404, "So‘rov topilmadi.");
+    if (!["pending", "awaiting_receipt"].includes(ps.data().status)) throw new HttpError(400, "Bu so‘rov allaqachon ko‘rib chiqilgan.");
+    tx.update(pref, { status: "rejected", reason: clean(reason, 200), decidedAt: FV.serverTimestamp(), decidedBy: by });
+    return ps.data();
+  });
+  notifyPayment(p, false, clean(reason, 200)).catch(() => {});
+  return p;
+}
+
+// Ilovada paket tanlandi → bot foydalanuvchidan chek rasmini so'raydi
+route("POST", "/api/payments/start", async (req) => {
+  const u = await auth(req);
+  if (!u.tg) throw new HttpError(400, "Bu usul faqat Telegram ichida ishlaydi.");
+  const body = await readBody(req);
+  const s = await getSettings();
+  const pkg = (s.packages || []).find((p) => p.id === body.packageId);
+  if (!pkg) throw new HttpError(400, "Paketni tanlang.");
+  if (!s.cardNumber) throw new HttpError(400, "To‘lov ma’lumotlari hali kiritilmagan.");
+  await ensureUser(u);
+  const mine = await db.collection("payments").where("uid", "==", u.uid).get();
+  const open = mine.docs.filter((d) => d.data().status === "pending").length;
+  if (open >= 3) throw new HttpError(429, "Sizda tekshirilmagan cheklar bor. Admin tasdiqlashini kuting.");
+  for (const d of mine.docs) if (d.data().status === "awaiting_receipt") await d.ref.update({ status: "cancelled" });
+  await db.collection("payments").add({
+    uid: u.uid, email: u.email, name: u.name, packageId: pkg.id, title: pkg.title, credits: Number(pkg.credits) || 0,
+    price: Number(pkg.price) || 0, method: "card", status: "awaiting_receipt", note: "Chek bot orqali", createdAt: FV.serverTimestamp(),
+  });
+  const card = String(s.cardNumber).replace(/\s+/g, "").replace(/(\d{4})(?=\d)/g, "$1 ");
+  const r = await tg("sendMessage", { chat_id: u.tgId, text:
+    `💳 «${pkg.title}» — ${fmtSum(pkg.price)}\n\n1) Shu kartaga o‘tkazing:\n${card}${s.cardHolder ? "\n" + s.cardHolder : ""}\n\n` +
+    "2) To‘lov chekining rasmini (skrinshot) shu chatga yuboring 📸\n\nAdmin tasdiqlashi bilan jetonlar hisobingizga avtomatik tushadi." });
+  if (!r.ok) throw new HttpError(400, "Bot sizga yoza olmadi. Avval botga /start yozing, keyin qayta urining.", "tg_start");
+  return { ok: true };
+});
+
+// Stars: Telegram to'lov oynasi uchun havola
+route("POST", "/api/stars/invoice", async (req) => {
+  const u = await auth(req);
+  if (!u.tg) throw new HttpError(400, "Stars faqat Telegram ichida ishlaydi.");
+  const body = await readBody(req);
+  const s = await getSettings();
+  const pkg = (s.packages || []).find((p) => p.id === body.packageId);
+  if (!pkg || !(Number(pkg.stars) > 0)) throw new HttpError(400, "Bu paketni Stars bilan sotib bo‘lmaydi.");
+  const r = await tg("createInvoiceLink", {
+    title: String(pkg.title).slice(0, 32), description: `${pkg.credits} jeton — taqdimot yasash uchun`.slice(0, 255),
+    payload: `st|${u.uid}|${pkg.id}|${Date.now()}`, currency: "XTR", prices: [{ label: String(pkg.title).slice(0, 32), amount: Number(pkg.stars) }],
+  });
+  if (!r.ok) throw new HttpError(502, "To‘lov oynasini ochib bo‘lmadi. Birozdan keyin urinib ko‘ring.");
+  return { link: r.result };
 });
 
 route("POST", "/api/generate", async (req) => {
   const u = await auth(req);
   const body = await readBody(req);
-  // Ikki usul: "topic" — mavzu bo'yicha, "text" — foydalanuvchining o'z matnidan
-  const mode = body.mode === "text" ? "text" : "topic";
+  // Uch usul: "topic" — mavzu bo'yicha, "text" — o'z matnidan, "sample" — namunaga o'xshatib
+  const mode = ["text", "sample"].includes(body.mode) ? body.mode : "topic";
+  const cost = COST[mode];
   const topic = clean(body.topic, 200);
   const source = mode === "text"
     ? String(body.source || "").replace(/\r\n?/g, "\n").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, 30000) : "";
-  if (mode === "topic" && topic.length < 3) throw new HttpError(400, "Mavzuni to‘liqroq yozing.");
+  if (mode !== "text" && topic.length < 3) throw new HttpError(400, "Mavzuni to‘liqroq yozing.");
   if (mode === "text" && source.length < 200) throw new HttpError(400, "Matn juda qisqa. Kamida bir-ikki xatboshi joylang.");
   const subject = clean(body.subject, 50);
   const n = [10, 12, 15, 20].includes(Number(body.n)) ? Number(body.n) : 12;
   const lang = langOf(body.lang);
-  await ensureUser(u);
+  const u0 = await ensureUser(u);
+  if (mode === "sample" && !(u0.sample && u0.sample.profile)) throw new HttpError(400, "Avval namuna faylini yuklang.", "no_sample");
+  await checkChannel(u);
   const ref = db.collection("users").doc(u.uid);
+  let profile = null;
   await db.runTransaction(async (tx) => {
     const d = (await tx.get(ref)).data();
     if (d.blocked) throw new HttpError(403, "Hisobingiz bloklangan. Admin bilan bog‘laning.", "blocked");
-    if ((d.credits || 0) <= 0) throw new HttpError(402, "Taqdimotlar limiti tugadi.", "no_credits");
-    tx.update(ref, { credits: FV.increment(-1), used: FV.increment(1) });
+    if ((d.credits || 0) < cost)
+      throw new HttpError(402, (d.credits || 0) > 0 ? `Jeton yetarli emas: bu usul ${cost} jeton turadi.` : "Jetonlar tugadi.", "no_credits");
+    if (mode === "sample") profile = d.sample && d.sample.profile;
+    tx.update(ref, { credits: FV.increment(-cost), used: FV.increment(1) });
   });
   let data;
   try {
-    const prompt = mode === "text" ? Deck.buildTextPrompt(source, topic, subject, n, lang) : Deck.buildPrompt(topic, subject, n, lang);
+    const prompt = mode === "text" ? Deck.buildTextPrompt(source, topic, subject, n, lang)
+      : mode === "sample" ? Deck.buildSamplePrompt(topic, subject, profile, lang) : Deck.buildPrompt(topic, subject, n, lang);
     data = Deck.normalize(await askGemini(prompt), topic || "Taqdimot");
+    if (mode === "sample") {
+      const skip = [];
+      if (profile.has_plan === false) skip.push("plan");
+      if (profile.has_references === false) skip.push("references");
+      if (profile.has_thanks === false) skip.push("thanks");
+      if (skip.length) data.skip = skip;
+    }
   } catch (e) {
-    await ref.update({ credits: FV.increment(1), used: FV.increment(-1) });   // xato bo'lsa limit qaytariladi
+    await ref.update({ credits: FV.increment(cost), used: FV.increment(-1) });   // xato bo'lsa jeton qaytariladi
     if (e instanceof HttpError) {
-      if (e.status !== 401 && e.status !== 403) e.message += " Limitingiz qaytarildi.";
+      if (e.status !== 401 && e.status !== 403) e.message += " Jetoningiz qaytarildi.";
       throw e;
     }
     log("normalize xato:", e.message);
-    throw new HttpError(500, "Taqdimot matnini olib bo‘lmadi. Qayta urinib ko‘ring — limitingiz qaytarildi.");
+    throw new HttpError(500, "Taqdimot matnini olib bo‘lmadi. Qayta urinib ko‘ring — jetoningiz qaytarildi.");
   }
   const gen = db.collection("generations").doc();
   const batch = db.batch();
-  batch.set(gen, { uid: u.uid, email: u.email, topic: topic || clean(data.title, 120), title: clean(data.title, 120), subject, lang, n, mode,
+  batch.set(gen, { uid: u.uid, email: u.email, topic: topic || clean(data.title, 120), title: clean(data.title, 120), subject, lang, n, mode, cost,
     createdAt: FV.serverTimestamp() });
   batch.set(db.collection("decks").doc(gen.id), { uid: u.uid, data, lang, subject, createdAt: FV.serverTimestamp() });
   batch.set(db.doc("stats/main"), { generations: FV.increment(1) }, { merge: true });
   await batch.commit();
   const after = (await ref.get()).data();
-  return { id: gen.id, data, credits: after.credits || 0 };
+  return { id: gen.id, data, credits: after.credits || 0, mode };
 });
 
 route("POST", "/api/crossword", async (req) => {
@@ -579,7 +890,7 @@ route("GET", "/api/payments", async (req) => {
   const items = snap.docs.map((d) => {
     const p = d.data();
     return { id: d.id, title: p.title, credits: p.credits, price: p.price, status: p.status, reason: p.reason || "",
-      createdAt: iso(p.createdAt) };
+      method: p.method || "card", stars: p.stars || 0, createdAt: iso(p.createdAt) };
   }).sort(byNewest).slice(0, 10);
   return { items };
 });
@@ -614,7 +925,7 @@ route("GET", "/api/admin/stats", async (req) => {
     today = (await db.collection("generations").where("createdAt", ">=", tashkentDayStart()).count().get()).data().count;
   } catch (e) { log("bugungi son:", e.message); }
   return { users: st.users || 0, generations: st.generations || 0, revenue: st.revenue || 0,
-    approved: st.approvedPayments || 0, pending, today, warnings: WARN, models: MODELS,
+    approved: st.approvedPayments || 0, stars: st.stars || 0, pending, today, warnings: WARN, models: MODELS,
     telegram: TG_BOT ? "@" + TG_BOT.username : null, site: SITE_URL || null };
 });
 
@@ -627,50 +938,120 @@ route("GET", "/api/admin/payments", async (req, url) => {
   const items = (await q.get()).docs.map((d) => {
     const p = d.data();
     return { id: d.id, uid: p.uid, email: p.email, name: p.name, title: p.title, credits: p.credits, price: p.price,
-      note: p.note, status: p.status, reason: p.reason || "", createdAt: iso(p.createdAt), decidedAt: iso(p.decidedAt) };
+      note: p.note, status: p.status, reason: p.reason || "", method: p.method || "card", stars: p.stars || 0, receipt: !!p.receipt,
+      createdAt: iso(p.createdAt), decidedAt: iso(p.decidedAt) };
   }).sort(byNewest).slice(0, 100);
   return { items };
+});
+
+// Chek rasmini admin panelda ko'rsatish (Telegram serveridan olib beramiz)
+route("GET", "/api/admin/receipt", async (req, url) => {
+  needAdmin(req);
+  const ps = await db.collection("payments").doc(clean(url.searchParams.get("id"), 120)).get();
+  const rc = ps.exists && ps.data().receipt;
+  if (!rc || !TG_TOKEN) throw new HttpError(404, "Chek topilmadi.");
+  const f = await tg("getFile", { file_id: rc.fileId });
+  if (!f.ok) throw new HttpError(502, "Chekni Telegram’dan olib bo‘lmadi.");
+  if (f.result.file_size > 15 * 1024 * 1024) throw new HttpError(413, "Chek fayli juda katta — uni bot chatida ko‘ring.");
+  const r = await fetch(`${TG_API}/file/bot${TG_TOKEN}/${f.result.file_path}`, { signal: AbortSignal.timeout(30000) });
+  if (!r.ok) throw new HttpError(502, "Chekni Telegram’dan olib bo‘lmadi.");
+  const buf = Buffer.from(await r.arrayBuffer());
+  const ext = String(f.result.file_path).split(".").pop().toLowerCase();
+  const mime = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", pdf: "application/pdf" }[ext] || "application/octet-stream";
+  return { mime, dataUrl: `data:${mime};base64,${buf.toString("base64")}` };
 });
 
 route("POST", "/api/admin/payments/approve", async (req) => {
   needAdmin(req);
   const { id } = await readBody(req);
-  const pref = db.collection("payments").doc(String(id || "x"));
-  await db.runTransaction(async (tx) => {
-    const ps = await tx.get(pref);
-    if (!ps.exists) throw new HttpError(404, "So‘rov topilmadi.");
-    const p = ps.data();
-    if (p.status !== "pending") throw new HttpError(400, "Bu so‘rov allaqachon ko‘rib chiqilgan.");
-    tx.update(db.collection("users").doc(p.uid), { credits: FV.increment(p.credits) });
-    tx.update(pref, { status: "approved", decidedAt: FV.serverTimestamp(), decidedBy: "admin" });
-    tx.set(db.doc("stats/main"), { revenue: FV.increment(p.price || 0), approvedPayments: FV.increment(1) }, { merge: true });
-  });
+  await approvePayment(id, "admin");
   return { ok: true };
 });
 
 route("POST", "/api/admin/payments/reject", async (req) => {
   needAdmin(req);
   const { id, reason } = await readBody(req);
-  const pref = db.collection("payments").doc(String(id || "x"));
-  await db.runTransaction(async (tx) => {
-    const ps = await tx.get(pref);
-    if (!ps.exists) throw new HttpError(404, "So‘rov topilmadi.");
-    if (ps.data().status !== "pending") throw new HttpError(400, "Bu so‘rov allaqachon ko‘rib chiqilgan.");
-    tx.update(pref, { status: "rejected", reason: clean(reason, 200), decidedAt: FV.serverTimestamp(), decidedBy: "admin" });
-  });
+  await rejectPayment(id, reason, "admin");
   return { ok: true };
+});
+
+// Admin panel Telegram ichida ochilganda — shu Telegram akkaunt cheklarni qabul qiladigan bo'ladi
+route("POST", "/api/admin/tg-link", async (req) => {
+  needAdmin(req);
+  const { initData } = await readBody(req);
+  const t = verifyTelegram(String(initData || ""));
+  const s = await getSettings(true);
+  const list = (s.adminChats || []).filter((a) => String(a.id) !== String(t.id));
+  const isNew = list.length === (s.adminChats || []).length;
+  list.unshift({ id: t.id, name: clean([t.first_name, t.username ? "@" + t.username : ""].filter(Boolean).join(" "), 80) });
+  await db.doc("settings/main").set({ adminChats: list.slice(0, 5) }, { merge: true });
+  await getSettings(true);
+  if (isNew) tg("sendMessage", { chat_id: t.id, text: "✅ Bu Telegram akkaunt admin sifatida ulandi. Yangi to‘lov cheklari shu yerga «Tasdiqlash / Rad etish» tugmalari bilan keladi." });
+  return { adminChats: list.slice(0, 5) };
+});
+
+route("POST", "/api/admin/tg-unlink", async (req) => {
+  needAdmin(req);
+  const { id } = await readBody(req);
+  const s = await getSettings(true);
+  const list = (s.adminChats || []).filter((a) => String(a.id) !== String(id));
+  await db.doc("settings/main").set({ adminChats: list }, { merge: true });
+  await getSettings(true);
+  return { adminChats: list };
+});
+
+// Hammaga xabar (Telegram foydalanuvchilariga), soniyasiga ~20 ta
+let broadcastJob = null;
+route("POST", "/api/admin/broadcast", async (req) => {
+  needAdmin(req);
+  if (!TG_TOKEN) throw new HttpError(400, "Telegram bot ulanmagan.");
+  if (broadcastJob && !broadcastJob.done) throw new HttpError(409, "Oldingi xabar hali yuborilmoqda.");
+  const { text } = await readBody(req);
+  const msg = String(text || "").trim().slice(0, 3500);
+  if (msg.length < 2) throw new HttpError(400, "Xabar matnini yozing.");
+  const snap = await db.collection("users").get();
+  const ids = snap.docs.filter((d) => d.id.startsWith("tg_") && !d.data().blocked).map((d) => d.id.slice(3));
+  broadcastJob = { total: ids.length, sent: 0, failed: 0, done: false, startedAt: new Date().toISOString() };
+  const job = broadcastJob;
+  (async () => {
+    for (const id of ids) {
+      let r = await tg("sendMessage", { chat_id: id, text: msg, reply_markup: SITE_URL ? appButton("📊 Ilovani ochish") : undefined });
+      if (!r.ok && r.error_code === 429) {
+        await new Promise((x) => setTimeout(x, ((r.parameters && r.parameters.retry_after) || 2) * 1000));
+        r = await tg("sendMessage", { chat_id: id, text: msg });
+      }
+      if (r.ok) job.sent++; else job.failed++;
+      await new Promise((x) => setTimeout(x, 50));
+    }
+    job.done = true;
+    log(`xabar yuborildi: ${job.sent}/${job.total}, xato ${job.failed}`);
+  })().catch((e) => { job.done = true; log("xabar xatosi:", e.message); });
+  return { job };
+});
+
+route("GET", "/api/admin/broadcast", async (req) => {
+  needAdmin(req);
+  return { job: broadcastJob };
 });
 
 route("GET", "/api/admin/users", async (req, url) => {
   needAdmin(req);
-  const q = clean(url.searchParams.get("q"), 100).toLowerCase();
-  const query = q
-    ? db.collection("users").where("email", ">=", q).where("email", "<=", q + "").limit(50)
-    : db.collection("users").orderBy("createdAt", "desc").limit(50);
-  const items = (await query.get()).docs.map((d) => {
+  let q = clean(url.searchParams.get("q"), 100).toLowerCase().replace(/^https?:\/\/t\.me\//, "");
+  let docs;
+  if (/^\d{3,}$/.test(q)) {           // Telegram ID bo'yicha
+    const d = await db.collection("users").doc("tg_" + q).get();
+    docs = d.exists ? [d] : [];
+  } else {
+    if (q && !q.startsWith("@") && !q.startsWith("tg:") && !q.includes("@")) q = "@" + q;
+    const query = q
+      ? db.collection("users").where("email", ">=", q).where("email", "<=", q + "").limit(50)
+      : db.collection("users").orderBy("createdAt", "desc").limit(50);
+    docs = (await query.get()).docs;
+  }
+  const items = docs.map((d) => {
     const u = d.data();
     return { uid: d.id, email: u.email, name: u.name, credits: u.credits || 0, used: u.used || 0, blocked: !!u.blocked,
-      createdAt: iso(u.createdAt), lastSeen: iso(u.lastSeen) };
+      refCount: u.refCount || 0, createdAt: iso(u.createdAt), lastSeen: iso(u.lastSeen) };
   });
   return { items };
 });
@@ -714,13 +1095,18 @@ route("POST", "/api/admin/settings", async (req) => {
     if (seen.has(id)) id += "_" + i;
     seen.add(id);
     return { id, title: clean(p.title, 60), credits: Math.max(1, Math.trunc(Number(p.credits)) || 1),
-      price: Math.max(0, Math.trunc(Number(p.price)) || 0) };
+      price: Math.max(0, Math.trunc(Number(p.price)) || 0), stars: Math.min(100000, Math.max(0, Math.trunc(Number(p.stars)) || 0)) };
   }).filter((p) => p.title);
+  const cur = await getSettings(true);
+  const ch = clean(b.requiredChannel, 64).replace(/^https?:\/\/(t\.me|telegram\.me)\//i, "").replace(/^@?/, "");
   const s = {
     freeCredits: Math.min(100, Math.max(0, Math.trunc(Number(b.freeCredits)) || 0)),
     cardNumber: clean(b.cardNumber, 40), cardHolder: clean(b.cardHolder, 60),
     telegram: clean(b.telegram, 80).replace(/^https?:\/\/(t\.me|telegram\.me)\//i, "").replace(/^@/, ""),
     note: clean(b.note, 500), packages,
+    refEvery: b.refEvery == null ? cur.refEvery || 5 : Math.min(100, Math.max(1, Math.trunc(Number(b.refEvery)) || 5)),
+    refBonus: b.refBonus == null ? (cur.refBonus == null ? 2 : cur.refBonus) : Math.min(100, Math.max(0, Math.trunc(Number(b.refBonus)) || 0)),
+    requiredChannel: ch ? "@" + ch : "", adminChats: cur.adminChats || [],
   };
   await db.doc("settings/main").set(s);
   return { settings: await getSettings(true) };
@@ -742,20 +1128,35 @@ const STATIC = {
 };
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8" };
 
-function serveStatic(res, pathname) {
+// Fayllar xotirada siqilgan holda saqlanadi; ETag bilan telefon o'zgarmagan faylni qayta yuklamaydi
+const staticCache = new Map();
+function loadStatic(name) {
+  if (staticCache.has(name)) return staticCache.get(name);
+  const buf = fs.readFileSync(path.join(ROOT, name));
+  const item = { buf, gz: zlib.gzipSync(buf, { level: 9 }), etag: '"' + crypto.createHash("sha1").update(buf).digest("hex").slice(0, 16) + '"' };
+  staticCache.set(name, item);
+  return item;
+}
+
+function serveStatic(req, res, pathname) {
   if (pathname === "/healthz") { res.writeHead(200, { "Content-Type": "text/plain" }); return res.end("ok"); }
   const name = STATIC[pathname];
   if (!name) { res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" }); return res.end("Topilmadi"); }
-  fs.readFile(path.join(ROOT, name), (err, buf) => {
-    if (err) { res.writeHead(500); return res.end("Fayl yo‘q: " + name); }
-    res.writeHead(200, { "Content-Type": TYPES[path.extname(name)], "Cache-Control": "no-cache" });
-    res.end(buf);
-  });
+  let item;
+  try { item = loadStatic(name); } catch (e) { res.writeHead(500); return res.end("Fayl yo‘q: " + name); }
+  const headers = { "Content-Type": TYPES[path.extname(name)], "Cache-Control": "no-cache", ETag: item.etag, Vary: "Accept-Encoding" };
+  if (req.headers["if-none-match"] === item.etag) { res.writeHead(304, headers); return res.end(); }
+  if (/\bgzip\b/.test(req.headers["accept-encoding"] || "")) {
+    res.writeHead(200, Object.assign(headers, { "Content-Encoding": "gzip" }));
+    return res.end(item.gz);
+  }
+  res.writeHead(200, headers);
+  res.end(item.buf);
 }
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
-  if (!url.pathname.startsWith("/api/")) return serveStatic(res, url.pathname);
+  if (!url.pathname.startsWith("/api/")) return serveStatic(req, res, url.pathname);
   const fn = routes[req.method + " " + url.pathname];
   if (!fn) return send(res, 404, { error: "Topilmadi", code: "not_found" });
   if (SETUP.length && url.pathname !== "/api/config")
@@ -777,4 +1178,8 @@ server.listen(PORT, () => {
   if (SETUP.length) log("SOZLASH KERAK:", SETUP.join("; "));
   if (WARN.length) log("Ogohlantirish:", WARN.join("; "));
   if (!SETUP.length) setupTelegram().catch((e) => log("telegram sozlash xatosi:", e.message));
+  // Render bepul serveri 15 daqiqa so'rovsiz qolsa uxlaydi. O'zimizni har 10 daqiqada uyg'otib turamiz.
+  if (SITE_URL && (process.env.KEEP_AWAKE || "on").toLowerCase() !== "off") {
+    setInterval(() => { fetch(SITE_URL + "/healthz", { signal: AbortSignal.timeout(20000) }).catch(() => {}); }, 10 * 60000).unref();
+  }
 });

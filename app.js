@@ -151,6 +151,7 @@ function adminLogout() {
 
 function showAdminLogin() {
   const box = $("adminView");
+  if ($("admLoginForm") && box.contains($("admLoginForm"))) return;   // forma ochiq — yozilganini o'chirmaymiz
   box.innerHTML = `<form class="panel admin-login" id="admLoginForm" novalidate>
       <h1 class="brand" style="font-size:22px">Admin panel</h1>
       <p class="fine">Faqat sayt egasi uchun.</p>
@@ -343,6 +344,10 @@ function route() {
     if (!state.adminToken) { state.adminMounted = false; showAdminLogin(); return; }
     if (state.adminMounted) return;   // panel allaqachon ochiq — qayta yuklamaymiz
     state.adminMounted = true;
+    if (TG && !state.adminLinked) {
+      state.adminLinked = true;
+      adminApi("/api/admin/tg-link", { body: { initData: TG.initData } }).catch(() => { state.adminLinked = false; });
+    }
     const helpers = { api: adminApi, toast, esc, fmtMoney, fmtDate, refreshMe: () => (state.user ? refreshMe() : Promise.resolve()) };
     import("./admin.js").then((m) => m.mountAdmin($("adminView"), helpers))
       .catch((e) => { console.error(e); state.adminMounted = false; toast("Admin panel yuklanmadi."); });
@@ -397,7 +402,29 @@ function showSetup(cfg) {
 // ------------------------------------------------------------ asosiy sahifa
 const form = () => $("form");
 const val = (name) => (document.querySelector(`input[name="${name}"]:checked`) || {}).value;
-const opts = () => ({ author: $("author").value, subject: $("subject").value, theme: val("theme"), lang: state.lang });
+const opts = () => {
+  const theme = val("theme");
+  return { author: $("author").value, subject: $("subject").value, theme, lang: state.lang,
+    customTheme: theme === "namuna" && state.sampleTheme ? state.sampleTheme : undefined };
+};
+const themeName = () => (val("theme") === "namuna" && state.sampleTheme ? "Namuna ranglari" : (Deck.THEMES[val("theme")] || Deck.THEMES.klassik).name);
+
+// Namuna ranglaridan qo'shimcha "Namuna" dizayni
+function ensureSampleTheme(colors, select) {
+  if (!colors) return;
+  state.sampleColors = colors;
+  state.sampleTheme = Deck.makeTheme(colors);
+  const th = state.sampleTheme;
+  let lab = $("theme-namuna") && $("theme-namuna").parentElement;
+  if (!lab) {
+    lab = document.createElement("label");
+    $("themes").appendChild(lab);
+  }
+  const checked = select || ($("theme-namuna") && $("theme-namuna").checked);
+  lab.innerHTML = `<input type="radio" name="theme" value="namuna" id="theme-namuna"${checked ? " checked" : ""}>` +
+    `<span class="sw"><span class="chips"><i style="background:#${th.dark}"></i><i style="background:#${th.accent}"></i>` +
+    `<i style="background:#${th.light}"></i></span><span class="nm">Namuna</span></span>`;
+}
 
 function initMain() {
   const themesBox = $("themes");
@@ -441,6 +468,8 @@ function initMain() {
     if (!b) return;
     if (b.dataset.act === "login") login();
     if (b.dataset.act === "buy") openPay();
+    if (b.dataset.act === "share") shareRef();
+    if (b.dataset.act === "copyref" && state.me) copyText(state.me.refLink);
   });
   $("histList").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-id]");
@@ -473,6 +502,7 @@ function applySaved(saved) {
   $("topic").value = saved.topic || "";
   $("subject").value = saved.subject || "";
   $("author").value = saved.author || "";
+  if (saved.sampleColors) ensureSampleTheme(saved.sampleColors, saved.theme === "namuna");
   if (saved.theme && $("theme-" + saved.theme)) $("theme-" + saved.theme).checked = true;
   if ($("lang-" + state.lang)) $("lang-" + state.lang).checked = true;
 }
@@ -482,7 +512,7 @@ function persist() {
   try {
     localStorage.setItem(STORE, JSON.stringify({
       data: state.data, deckId: state.deckId, lang: state.lang, topic: $("topic").value,
-      subject: $("subject").value, author: $("author").value, theme: val("theme"),
+      subject: $("subject").value, author: $("author").value, theme: val("theme"), sampleColors: state.sampleColors || null,
     }));
   } catch (e) { /* brauzer saqlashga ruxsat bermasa — muhim emas */ }
 }
@@ -491,9 +521,9 @@ function render() {
   state.model = Deck.buildDeck(state.data, opts());
   $("resTitle").textContent = state.model.title;
   const pill = $("resPill");
-  pill.textContent = state.isSample ? "NAMUNA" : "TAYYOR";
+  pill.textContent = state.isSample ? "MISOL" : "TAYYOR";
   pill.className = "pill " + (state.isSample ? "sample" : "ready");
-  $("resMeta").textContent = `${state.model.slides.length} ta slayd · ${Deck.THEMES[val("theme")].name} dizayn`;
+  $("resMeta").textContent = `${state.model.slides.length} ta slayd · ${themeName()} dizayn`;
   $("how").hidden = !state.isSample;
   const hasCw = !!(state.data.crossword && state.data.crossword.words);
   $("cwDlBtn").hidden = !hasCw;
@@ -531,20 +561,46 @@ function renderAuth() {
     box.classList.add("zero");
     box.innerHTML = `<p><b>Hisobingiz bloklangan.</b> Savollar bo‘lsa, admin bilan bog‘laning.</p>`;
   } else if (me.credits > 0) {
-    box.innerHTML = `<p>Salom, ${name}! Sizda yana <b>${me.credits} ta</b> taqdimot yasash imkoni bor.</p>
-      <p class="fine"><a href="#" data-buy>Ko‘proq kerakmi? Paket sotib olish</a></p>`;
+    box.innerHTML = `<p>Salom, ${name}! Sizda <b>${me.credits} ta jeton</b> bor. Oddiy taqdimot — 1 jeton, namunadek — 2 jeton.</p>
+      <p class="fine"><a href="#" data-buy>Ko‘proq kerakmi? Jeton sotib olish</a></p>${refBlock(me)}`;
     box.querySelector("[data-buy]").addEventListener("click", (e) => { e.preventDefault(); openPay(); });
   } else {
     box.classList.add("zero");
-    box.innerHTML = `<p>Bepul taqdimotlar tugadi. <b>Paket sotib oling</b> — kartaga to‘lab, chekni yuborasiz.</p>
-      <button type="button" class="btn btn-primary btn-block" data-act="buy">💳 Paket sotib olish</button>`;
+    box.innerHTML = `<p>Jetonlar tugadi. <b>Jeton sotib oling</b> yoki do‘stlaringizni taklif qiling.</p>
+      <button type="button" class="btn btn-primary btn-block" data-act="buy">💳 Jeton sotib olish</button>${refBlock(me)}`;
   }
+  renderSample();
+}
+
+// Do'st taklif qilish: har N ta do'st uchun +M jeton
+function refBlock(me) {
+  if (!me.refLink) return "";
+  const s = state.cfg.settings || {};
+  const every = s.refEvery || 5, bonus = s.refBonus == null ? 2 : s.refBonus;
+  if (!bonus) return "";
+  const left = every - ((me.refCount || 0) % every);
+  return `<div class="ref"><p>👥 <b>Do‘st taklif qiling</b> — har ${every} ta do‘st uchun +${bonus} jeton.
+    Taklif qilganlaringiz: <b>${me.refCount || 0}</b>. Keyingi bonusgacha: ${left} ta.</p>
+    <div class="ref-acts"><button type="button" class="btn btn-ghost btn-sm" data-act="share">📤 Ulashish</button>
+    <button type="button" class="btn btn-ghost btn-sm" data-act="copyref">📋 Havola</button></div></div>`;
+}
+
+function shareRef() {
+  const link = state.me && state.me.refLink;
+  if (!link) return;
+  const text = "Mavzuni yoz — 1 daqiqada tayyor taqdimot (PowerPoint, PDF, Word). Sinab ko‘r:";
+  const url = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`;
+  if (TG && TG.openTelegramLink) TG.openTelegramLink(url);
+  else window.open(url, "_blank");
 }
 
 const GOOGLE_SVG = `<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>`;
 
-function setStatus(text, kind, progress) {
+function setStatus(text, kind, progress, link) {
   const st = $("status");
+  const a = $("stLink");
+  a.hidden = !link;
+  if (link) { a.href = link.href; a.textContent = link.text; }
   st.classList.add("show");
   st.classList.toggle("busy", kind === "busy");
   st.classList.toggle("err", kind === "err");
@@ -556,11 +612,11 @@ function setStatus(text, kind, progress) {
 async function onGenerate(ev) {
   ev.preventDefault();
   if (state.busy) return;
-  const mode = val("mode") === "text" ? "text" : "topic";
+  const mode = ["text", "sample"].includes(val("mode")) ? val("mode") : "topic";
   const topic = $("topic").value.replace(/\s+/g, " ").trim();
   const source = mode === "text" ? $("source").value.trim() : "";
-  if (mode === "topic" && topic.length < 3) {
-    setStatus("Avval taqdimot mavzusini yozing.", "err");
+  if (mode !== "text" && topic.length < 3) {
+    setStatus(mode === "sample" ? "Yangi taqdimot mavzusini yozing." : "Avval taqdimot mavzusini yozing.", "err");
     $("topic").focus();
     return;
   }
@@ -572,7 +628,16 @@ async function onGenerate(ev) {
   if (!state.user && !(await login())) return;
   if (!state.me) { try { await refreshMe(); } catch (e) { setStatus(e.message, "err"); return; } }
   if (state.me.blocked) { setStatus("Hisobingiz bloklangan.", "err"); return; }
-  if (state.me.credits <= 0) { openPay(); return; }
+  const cost = ((state.cfg.settings || {}).cost || { topic: 1, text: 1, sample: 2 })[mode] || 1;
+  if (mode === "sample" && !state.me.sample) {
+    setStatus("Avval namuna faylini yuklang: «📎 Namuna faylini tanlash».", "err");
+    return;
+  }
+  if (state.me.credits < cost) {
+    if (state.me.credits > 0) setStatus(`Bu usul ${cost} jeton turadi, sizda ${state.me.credits} ta. Jeton sotib oling yoki boshqa usulni tanlang.`, "err");
+    openPay();
+    return;
+  }
 
   const n = Number(val("n"));
   const lang = val("lang");
@@ -582,7 +647,7 @@ async function onGenerate(ev) {
   const started = Date.now();
   const tick = () => {
     const s = (Date.now() - started) / 1000;
-    const msg = s < 8 ? (mode === "text" ? "Matningiz o‘qilmoqda…" : "Mavzu o‘rganilmoqda…")
+    const msg = s < 8 ? (mode === "text" ? "Matningiz o‘qilmoqda…" : mode === "sample" ? "Namuna uslubi o‘rganilmoqda…" : "Mavzu o‘rganilmoqda…")
       : s < 45 ? (mode === "text" ? "Matn slaydlarga bo‘linmoqda…" : "Slaydlar matni yozilmoqda…") : s < 90 ? "Deyarli tayyor…" : "Biroz ko‘proq vaqt ketyapti, kuting…";
     setStatus(`${msg} ${Math.round(s)} soniya. Sahifani yopmang.`, "busy", 96 * (1 - Math.exp(-s / 35)));
   };
@@ -599,10 +664,16 @@ async function onGenerate(ev) {
     render();
     persist();
     loadHistory();
-    setStatus(`✓ Tayyor! Fayl turini tanlab, «Yuklab olish»ni bosing. Qolgan taqdimotlar: ${r.credits} ta.`, "ok", 100);
+    if (mode === "sample" && state.sampleTheme && $("theme-namuna")) { $("theme-namuna").checked = true; render(); persist(); }
+    setStatus(`✓ Tayyor! Fayl turini tanlab, «Yuklab olish»ni bosing. Qolgan jetonlar: ${r.credits} ta.`, "ok", 100);
     $("resTitle").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
-    if (e.code === "no_credits") { if (state.me) state.me.credits = 0; renderAuth(); openPay(); }
+    if (e.code === "no_credits") { refreshMe().catch(() => {}); openPay(); }
+    if (e.code === "need_sub") {
+      const ch = String((state.cfg.settings || {}).requiredChannel || "").replace(/^@/, "");
+      setStatus(e.message, "err", null, ch ? { href: "https://t.me/" + ch, text: "📢 Kanalga o‘tish" } : null);
+      return;
+    }
     if (e.code === "network") {
       setStatus("Aloqa uzildi. Taqdimot baribir tayyor bo‘lgan bo‘lishi mumkin — 1 daqiqadan so‘ng «Mening taqdimotlarim» ro‘yxatini oching.", "err");
       setTimeout(() => { loadHistory(); refreshMe().catch(() => {}); }, 30000);
@@ -649,16 +720,21 @@ async function onCrossword() {
 
 // ------------------------------------------------------------ 2-usul: o'z matnidan
 const MODE_HINT = {
-  topic: "AI mavzu bo‘yicha matnni o‘zi yozadi.",
-  text: "Matningizni joylang — AI uni slaydlarga bo‘lib, reja va xulosa qo‘shadi. Yangi fakt qo‘shmaydi.",
+  topic: "AI mavzu bo‘yicha matnni o‘zi yozadi. 1 jeton.",
+  text: "Matningizni joylang — AI uni slaydlarga bo‘lib, reja va xulosa qo‘shadi. Yangi fakt qo‘shmaydi. 1 jeton.",
+  sample: "Namuna yuklang va yangi mavzuni yozing — taqdimot namunadagi tuzilish, uslub va ranglarda yasaladi. 2 jeton.",
 };
 
 function initModes() {
   const apply = () => {
-    const text = val("mode") === "text";
+    const mode = val("mode") || "topic";
+    const text = mode === "text";
     $("srcBox").hidden = !text;
-    $("modeHint").textContent = MODE_HINT[text ? "text" : "topic"];
-    $("topicLbl").innerHTML = text ? 'Mavzu <span class="hint">(ixtiyoriy — bo‘lmasa matndan olinadi)</span>' : "Mavzu";
+    $("sampleBox").hidden = mode !== "sample";
+    $("nField").hidden = mode === "sample";
+    $("modeHint").textContent = MODE_HINT[mode];
+    $("topicLbl").innerHTML = text ? 'Mavzu <span class="hint">(ixtiyoriy — bo‘lmasa matndan olinadi)</span>'
+      : mode === "sample" ? 'Yangi mavzu <span class="hint">— namunadek yasaladi</span>' : "Mavzu";
     $("topic").rows = text ? 1 : 2;
     $("topic").placeholder = text ? "Masalan: Amir Temur davlati" : "Masalan: Amir Temur davlatining boshqaruv tizimi";
   };
@@ -687,12 +763,126 @@ function initModes() {
       setStatus("Faylni o‘qib bo‘lmadi. Matnni nusxalab, shu yerga joylang.", "err");
     }
   });
+  $("sampleFile").addEventListener("change", onSampleFile);
+  $("sampleChange").addEventListener("click", () => $("sampleFile").click());
   apply();
   count();
 }
 
-// Word (.docx) fayldan matnni olish: .docx — bu ZIP arxiv, matn word/document.xml ichida
-async function readDocx(file) {
+// ------------------------------------------------------------ 3-usul: namuna
+function renderSample() {
+  const sm = state.me && state.me.sample;
+  $("sampleCard").hidden = !sm;
+  $("sampleBtn").hidden = !!sm;
+  if (sm) {
+    $("sampleName").textContent = "✓ " + sm.name;
+    $("sampleSum").textContent = sm.summary || `${sm.slideCount} ta slayd`;
+    if (sm.colors && !state.sampleTheme) ensureSampleTheme(sm.colors, false);
+  }
+}
+
+async function onSampleFile() {
+  const f = $("sampleFile").files[0];
+  $("sampleFile").value = "";
+  if (!f || state.busy) return;
+  if (!state.user && !(await login())) return;
+  const name = f.name;
+  const low = name.toLowerCase();
+  const kind = low.endsWith(".pptx") ? "pptx" : low.endsWith(".pdf") ? "pdf" : low.endsWith(".docx") ? "docx" : null;
+  if (!kind) { setStatus("Namuna PowerPoint (.pptx), PDF yoki Word (.docx) bo‘lishi kerak. Eski .ppt bo‘lsa, PDF qilib saqlang.", "err"); return; }
+  if (kind === "pdf" && f.size > 8 * 1024 * 1024) { setStatus("PDF juda katta (ko‘pi bilan 8 MB).", "err"); return; }
+  state.busy = true;
+  $("goBtn").disabled = true;
+  const started = Date.now();
+  const tick = () => {
+    const s = Math.round((Date.now() - started) / 1000);
+    setStatus(`Namuna o‘rganilmoqda: tuzilishi, uslubi va ranglari… ${s} soniya`, "busy", 96 * (1 - Math.exp(-s / 20)));
+  };
+  tick();
+  const timer = setInterval(tick, 1000);
+  try {
+    const body = { name, kind };
+    if (kind === "pptx") Object.assign(body, await readPptx(f));
+    else if (kind === "docx") body.text = await readDocx(f);
+    else body.pdf = await new Promise((resolve, reject) => {
+      const rd = new FileReader();
+      rd.onload = () => resolve(String(rd.result));
+      rd.onerror = reject;
+      rd.readAsDataURL(f);
+    });
+    const r = await api("/api/sample", { body });
+    state.me.sample = r.sample;
+    if (r.sample.colors) ensureSampleTheme(r.sample.colors, true);
+    renderSample();
+    render();
+    persist();
+    setStatus(`✓ Namuna saqlandi: ${r.sample.summary || r.sample.slideCount + " ta slayd"} Endi yangi mavzuni yozib, «Taqdimot yasash»ni bosing.`, "ok", 100);
+  } catch (e) {
+    console.error(e);
+    setStatus(e instanceof ApiError ? e.message : "Namuna faylini o‘qib bo‘lmadi. Boshqa fayl yoki PDF bilan urinib ko‘ring.", "err");
+  } finally {
+    clearInterval(timer);
+    state.busy = false;
+    $("goBtn").disabled = false;
+  }
+}
+
+// .pptx dan slaydlar matni va asosiy ranglar
+async function readPptx(file) {
+  const z = await zipOpen(file);
+  const slides = z.names.filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+    .sort((a, b) => Number(a.match(/(\d+)\.xml$/)[1]) - Number(b.match(/(\d+)\.xml$/)[1]));
+  if (!slides.length) throw new Error("slayd topilmadi");
+  const dec = (t) => t.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+  // rang "og'irligi": fon > shakl > matn
+  const score = new Map();
+  const add = (xml, w) => { for (const m of xml.matchAll(/<a:srgbClr val="([0-9A-Fa-f]{6})"/g)) { const h = m[1].toUpperCase(); score.set(h, (score.get(h) || 0) + w); } };
+  const weigh = (xml, k) => {
+    add(xml, k);
+    for (const m of xml.matchAll(/<p:bg>[\s\S]*?<\/p:bg>/g)) add(m[0], 8 * k);
+    for (const m of xml.matchAll(/<p:spPr>[\s\S]*?<\/p:spPr>/g)) add(m[0], 3 * k);
+  };
+  let out = "";
+  for (let i = 0; i < slides.length && out.length < 40000; i++) {
+    const xml = await z.read(slides[i]);
+    weigh(xml, 1);
+    const paras = xml.split(/<\/a:p>/).map((p) => dec([...p.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((m) => m[1]).join("")).trim()).filter(Boolean);
+    const pics = (xml.match(/<p:pic>/g) || []).length;
+    const tables = (xml.match(/<a:tbl>/g) || []).length;
+    out += `--- Slide ${i + 1}${pics ? ` [${pics} picture]` : ""}${tables ? " [table]" : ""}\n` + paras.map((t, k) => (k ? "• " : "") + t.slice(0, 300)).join("\n") + "\n";
+  }
+  for (const n of z.names.filter((n) => /^ppt\/slide(Layout|Master)s\/[^/]+\.xml$/.test(n)).slice(0, 8)) { try { weigh(await z.read(n), 0.5); } catch (e) { /* */ } }
+  const theme = {};
+  const tn = z.names.find((n) => /^ppt\/theme\/theme1\.xml$/.test(n));
+  if (tn) {
+    const xml = await z.read(tn);
+    for (const k of ["dk1", "lt1", "dk2", "lt2", "accent1", "accent2"]) {
+      const m = new RegExp(`<a:${k}>\\s*<a:(?:srgbClr val|sysClr[^>]*lastClr)="([0-9A-Fa-f]{6})"`).exec(xml);
+      if (m) theme[k] = m[1].toUpperCase();
+    }
+  }
+  return { text: out.slice(0, 40000), colors: pickColors(score, theme) };
+}
+
+function pickColors(score, theme) {
+  const lin = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+  const rgb = (h) => [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  const L = (h) => { const [r, g, b] = rgb(h).map(lin); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+  const sat = (h) => { const c = rgb(h); const mx = Math.max(...c), mn = Math.min(...c); return mx === 0 ? 0 : (mx - mn) / mx; };
+  const list = [...score.entries()].sort((a, b) => b[1] - a[1]).map((e) => e[0]);
+  const OFFICE = ["4472C4", "5B9BD5", "156082", "4F81BD", "44546A", "1F497D", "0E2841"];
+  const dark = list.find((h) => L(h) < 0.07 && (sat(h) >= 0.15 || (score.get(h) || 0) >= 8))
+    || list.find((h) => L(h) < 0.07) || theme.dk2 || theme.dk1;
+  const isAcc = (h) => h !== dark && sat(h) > 0.35 && L(h) > 0.02 && L(h) < 0.6;
+  const accent = list.find(isAcc) || (theme.accent1 && !OFFICE.includes(theme.accent1) ? theme.accent1 : null) || theme.accent1;
+  const light = list.find((h) => L(h) > 0.72 && sat(h) < 0.3 && h !== "FFFFFF") || (list.includes("FFFFFF") ? "FFFFFF" : null) || theme.lt2 || "F6F7FB";
+  const accent2 = list.find((h) => isAcc(h) && h !== accent) || null;
+  if (!accent || !dark) return null;
+  return { dark, light, accent, accent2 };
+}
+
+// ZIP (.docx, .pptx) ichidagi fayllarni o'qish
+async function zipOpen(file) {
   const buf = new Uint8Array(await file.arrayBuffer());
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   let eocd = -1;
@@ -703,29 +893,34 @@ async function readDocx(file) {
   const total = dv.getUint16(eocd + 10, true);
   let p = dv.getUint32(eocd + 16, true);
   const dec = new TextDecoder();
+  const entries = new Map();
   for (let k = 0; k < total; k++) {
     if (dv.getUint32(p, true) !== 0x02014b50) break;
-    const method = dv.getUint16(p + 10, true);
-    const csize = dv.getUint32(p + 20, true);
     const nlen = dv.getUint16(p + 28, true), xlen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
-    const off = dv.getUint32(p + 42, true);
-    const name = dec.decode(buf.subarray(p + 46, p + 46 + nlen));
-    if (name === "word/document.xml") {
-      const start = off + 30 + dv.getUint16(off + 26, true) + dv.getUint16(off + 28, true);
-      const data = buf.subarray(start, start + csize);
-      let xml;
-      if (method === 0) xml = dec.decode(data);
-      else if (method === 8) {
-        if (typeof DecompressionStream === "undefined") throw new Error("DecompressionStream yo‘q");
-        xml = await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).text();
-      } else throw new Error("siqish usuli " + method);
-      return xml.replace(/<w:tab\/>/g, "\t").replace(/<w:br[^>]*\/>/g, "\n").replace(/<\/w:p>/g, "\n").replace(/<[^>]+>/g, "")
-        .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&")
-        .replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-    }
+    entries.set(dec.decode(buf.subarray(p + 46, p + 46 + nlen)),
+      { method: dv.getUint16(p + 10, true), csize: dv.getUint32(p + 20, true), off: dv.getUint32(p + 42, true) });
     p += 46 + nlen + xlen + clen;
   }
-  throw new Error("word/document.xml topilmadi");
+  const read = async (name) => {
+    const e = entries.get(name);
+    if (!e) throw new Error("yo‘q: " + name);
+    const start = e.off + 30 + dv.getUint16(e.off + 26, true) + dv.getUint16(e.off + 28, true);
+    const data = buf.subarray(start, start + e.csize);
+    if (e.method === 0) return dec.decode(data);
+    if (e.method !== 8) throw new Error("siqish usuli " + e.method);
+    if (typeof DecompressionStream === "undefined") throw new Error("DecompressionStream yo‘q");
+    return new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).text();
+  };
+  return { names: [...entries.keys()], read };
+}
+
+// Word (.docx) fayldan matnni olish: .docx — bu ZIP arxiv, matn word/document.xml ichida
+async function readDocx(file) {
+  const z = await zipOpen(file);
+  const xml = await z.read("word/document.xml");
+  return xml.replace(/<w:tab\/>/g, "\t").replace(/<w:br[^>]*\/>/g, "\n").replace(/<\/w:p>/g, "\n").replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&")
+    .replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 // ------------------------------------------------------------ yuklab olish
@@ -815,9 +1010,61 @@ async function openDeck(id) {
 }
 
 // ------------------------------------------------------------ to'lov
+function selectedPkg() {
+  const id = (document.querySelector('input[name="pkg"]:checked') || {}).value;
+  return ((state.cfg.settings || {}).packages || []).find((p) => p.id === id);
+}
+function updateStarsBtn() {
+  const p = selectedPkg();
+  const ok = !!(TG && TG.openInvoice && p && p.stars > 0);
+  $("payStars").hidden = !ok;
+  if (ok) $("payStars").textContent = `⭐ ${p.stars} Stars bilan to‘lash — jeton darhol tushadi`;
+}
+
+async function payWithStars() {
+  const p = selectedPkg();
+  if (!p) return;
+  $("payStars").disabled = true;
+  try {
+    const r = await api("/api/stars/invoice", { body: { packageId: p.id } });
+    TG.openInvoice(r.link, (status) => {
+      if (status === "paid") {
+        $("payMsg").textContent = "✓ To‘lov qabul qilindi! Jetonlar hisobingizga qo‘shilmoqda…";
+        setTimeout(() => refreshMe().then(() => loadMyPays()).catch(() => {}), 1500);
+      } else if (status === "failed") $("payMsg").textContent = "To‘lov amalga oshmadi. Qayta urinib ko‘ring.";
+    });
+  } catch (e) {
+    $("payMsg").textContent = e.message;
+  } finally {
+    $("payStars").disabled = false;
+  }
+}
+
+async function payWithReceipt() {
+  const p = selectedPkg();
+  if (!p) { $("payMsg").textContent = "Paketni tanlang."; return; }
+  $("payReceipt").disabled = true;
+  try {
+    await api("/api/payments/start", { body: { packageId: p.id } });
+    $("payMsg").innerHTML = "✓ Bot sizga karta raqamini yubordi. Kartaga o‘tkazib, <b>chek rasmini botga yuboring</b> — admin tasdiqlashi bilan jeton tushadi.";
+    loadMyPays();
+    if (TG && TG.showPopup) {
+      TG.showPopup({ title: "Chekni botga yuboring", message: "Bot chatida karta raqami turibdi. To‘lovdan keyin chek rasmini o‘sha chatga yuboring.",
+        buttons: [{ id: "go", type: "default", text: "Botga o‘tish" }, { type: "cancel" }] }, (id) => { if (id === "go") TG.close(); });
+    }
+  } catch (e) {
+    $("payMsg").textContent = e.message;
+  } finally {
+    $("payReceipt").disabled = false;
+  }
+}
+
 function initPay() {
   const dlg = $("payDlg");
   $("paySend").addEventListener("click", sendPayment);
+  $("payStars").addEventListener("click", payWithStars);
+  $("payReceipt").addEventListener("click", payWithReceipt);
+  $("pkgs").addEventListener("change", updateStarsBtn);
   $("payInfo").addEventListener("click", (e) => {
     if (e.target.closest("[data-copy]")) copyText(String(state.cfg.settings.cardNumber || "").replace(/\s+/g, ""));
   });
@@ -832,12 +1079,16 @@ async function openPay() {
   } catch (e) { /* eski sozlamalar bilan davom etamiz */ }
   const s = state.cfg.settings;
   const me = state.me || {};
-  $("payLead").textContent = me.credits > 0 ? `Hozir sizda ${me.credits} ta taqdimot bor.` : "Bepul taqdimotlar tugadi. Paketni tanlang:";
+  $("payLead").textContent = me.credits > 0 ? `Hozir sizda ${me.credits} ta jeton bor.` : "Jetonlar tugadi. Paketni tanlang:";
+  $("payTitle").textContent = "Jeton sotib olish";
   const pk = s.packages || [];
   $("pkgs").innerHTML = pk.length ? pk.map((p, i) => `<label><input type="radio" name="pkg" value="${esc(p.id)}"${i === 0 ? " checked" : ""}>
     <span class="pk"><b>${esc(p.title)}</b><span>${esc(fmtMoney(p.price))}</span>
-    <small>${p.credits > 0 ? esc(fmtMoney(Math.round(p.price / p.credits))) + " / dona" : ""}</small></span></label>`).join("")
+    <small>${p.credits > 0 ? esc(fmtMoney(Math.round(p.price / p.credits))) + " / jeton" : ""}${TG && p.stars > 0 ? ` · yoki ⭐ ${esc(p.stars)}` : ""}</small></span></label>`).join("")
     : `<p class="notice">Paketlar hali qo‘shilmagan.</p>`;
+  $("payNoteBox").hidden = !!TG;
+  $("paySend").hidden = !!TG;
+  $("payTg").hidden = !TG;
   const tg = String(s.telegram || "").trim();
   const card = String(s.cardNumber || "").trim();
   $("payInfo").innerHTML = !card ? `<p class="notice">To‘lov ma’lumotlari hali kiritilmagan. Keyinroq urinib ko‘ring.</p>` : `
@@ -847,13 +1098,20 @@ async function openPay() {
       ${s.cardHolder ? `<div class="cardholder">${esc(s.cardHolder)}</div>` : ""}</div>
       <button class="btn btn-ghost btn-sm" type="button" data-copy>📋 Nusxa</button>
     </div>
-    <ol class="steps" start="2">
+    ${TG ? `<ol class="steps" start="2">
+      <li>Pastdagi <b>«📸 Kartaga to‘lab, chekni botga yuborish»</b>ni bosing — bot karta raqamini yuboradi.</li>
+      <li>Kartaga o‘tkazing va chek rasmini (skrinshot) botga yuboring.</li>
+      <li>Admin tasdiqlashi bilan jetonlar hisobingizga <b>avtomatik</b> tushadi.</li>
+    </ol>
+    <p class="fine" style="margin-top:8px">Yoki <b>⭐ Stars</b> bilan to‘lang — jeton darhol tushadi.</p>` : `<ol class="steps" start="2">
       ${tg ? `<li>Chekni (skrinshot) Telegram’da yuboring: <a href="https://t.me/${encodeURIComponent(tg)}" target="_blank" rel="noopener">@${esc(tg)}</a>. ${TG ? "Chekni shu Telegram akkauntingizdan yuboring." : `Xabarga pochtangizni yozing: <b>${esc(me.email || "")}</b>`}</li>` : `<li>Chekni saqlab qo‘ying — admin so‘rashi mumkin.</li>`}
       <li>Pastdagi izohni yozib, «So‘rov yuborish»ni bosing.</li>
-      <li>Admin tasdiqlagach, taqdimotlar hisobingizga qo‘shiladi.</li>
+      <li>Admin tasdiqlagach, jetonlar hisobingizga qo‘shiladi.</li>
     </ol>
-    ${s.note ? `<p class="fine" style="margin-top:8px">${esc(s.note)}</p>` : ""}`;
+    ${s.note ? `<p class="fine" style="margin-top:8px">${esc(s.note)}</p>` : ""}`}`;
   $("paySend").disabled = !card || !pk.length;
+  $("payReceipt").disabled = !card || !pk.length;
+  updateStarsBtn();
   $("payMsg").textContent = "";
   $("payNote").value = "";
   loadMyPays();
@@ -878,12 +1136,12 @@ async function sendPayment() {
   }
 }
 
-const ST = { pending: "Kutilmoqda", approved: "Tasdiqlandi", rejected: "Rad etildi" };
+const ST = { pending: "Tekshirilmoqda", approved: "Tasdiqlandi", rejected: "Rad etildi", awaiting_receipt: "Chek kutilmoqda", cancelled: "Bekor qilindi" };
 async function loadMyPays() {
   try {
     const r = await api("/api/payments");
     $("myPays").hidden = !r.items.length;
-    $("myPaysList").innerHTML = r.items.map((p) => `<li><div class="main"><div class="t">${esc(p.title)} · ${esc(fmtMoney(p.price))}</div>
+    $("myPaysList").innerHTML = r.items.map((p) => `<li><div class="main"><div class="t">${esc(p.title)} · ${p.method === "stars" ? "⭐ " + esc(p.stars) : esc(fmtMoney(p.price))}</div>
       <div class="s">${esc(fmtDate(p.createdAt))}${p.reason ? " · " + esc(p.reason) : ""}</div></div>
       <span class="st ${esc(p.status)}">${esc(ST[p.status] || p.status)}</span></li>`).join("");
     if (r.items.some((p) => p.status === "approved")) refreshMe().catch(() => {});
