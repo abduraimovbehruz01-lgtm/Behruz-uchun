@@ -164,7 +164,7 @@ GitHub → `taqdimot` → **Add file → Upload files** → yangi faylni yuklang
 
 | Nomi | Nima uchun | Standart qiymat |
 |---|---|---|
-| `GEMINI_MODEL` | Qaysi Gemini modellari navbat bilan sinaladi (vergul bilan) | `gemini-flash-latest,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-flash-lite-latest,gemini-2.5-flash` |
+| `GEMINI_MODEL` | Qaysi Gemini modellari navbat bilan sinaladi (vergul bilan) | `gemini-3.8-flash,gemini-flash-latest,gemini-3.5-flash,gemini-4-hydrogen,gemini-3.5-flash-lite,gemini-flash-lite-latest` |
 | `CROSSWORD_DAILY` | Bir foydalanuvchi kuniga nechta krossvord tuza oladi | `5` |
 | `SITE_URL` | Server manzili (bot tugmalari uchun). Render o‘zi beradi — faqat o‘z domeningiz bo‘lsa yozasiz | Render manzili |
 | `TELEGRAM_WEBHOOK` | `off` yozilsa, server bot xabarlariga javob bermaydi (faqat menyu tugmasini sozlaydi) | `on` |

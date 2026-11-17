@@ -19,7 +19,7 @@ const Deck = require("./deck.js");
 const PORT = Number(process.env.PORT) || 8080;
 const GEMINI_KEY = (process.env.GEMINI_API_KEY || "").trim();
 const GEMINI_BASE = (process.env.GEMINI_BASE || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "");
-const MODELS = (process.env.GEMINI_MODEL || "gemini-flash-latest,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-flash-lite-latest,gemini-2.5-flash")
+const MODELS = (process.env.GEMINI_MODEL || "gemini-3.8-flash,gemini-flash-latest,gemini-3.5-flash,gemini-4-hydrogen,gemini-3.5-flash-lite,gemini-flash-lite-latest")
   .split(",").map((s) => s.trim()).filter(Boolean);
 const ADMIN_LOGIN = (process.env.ADMIN_LOGIN || "").trim();
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
@@ -338,7 +338,11 @@ async function callModel(model, prompt, withThinking) {
   if (r.status === 400 && /location is not supported/i.test(txt))
     throw new HttpError(500, "Gemini bu server joylashgan mamlakatda ishlamaydi. Admin serverni boshqa hududga ko‘chirishi kerak.", "ai_key");
   if (r.status === 400 && gen.thinkingConfig) return callModel(model, prompt, false);
-  if (!r.ok) throw new Error(`${model} ${r.status}: ${txt.slice(0, 200).replace(/\s+/g, " ")}`);
+  if (!r.ok) {
+    const err = new Error(`${model} ${r.status}: ${txt.slice(0, 200).replace(/\s+/g, " ")}`);
+    err.status = r.status;
+    throw err;
+  }
   let j = {};
   try { j = JSON.parse(txt); } catch (e) { throw new Error(`${model}: javob o‘qilmadi`); }
   const cand = j.candidates && j.candidates[0];
@@ -353,19 +357,35 @@ async function callModel(model, prompt, withThinking) {
 }
 
 // Modellarni navbat bilan sinaymiz: biri band (429) yoki topilmasa (404) — keyingisi
+// Oxirgi ishlagan model birinchi sinaladi; topilmagan (404) modellar 6 soat chetlab o'tiladi.
+// Google "band" (503/429) desa — hamma modellarni yana 2 marta, oraliq bilan sinaymiz.
+let lastGoodModel = null;
+const deadModels = new Map();
 async function askGemini(prompt) {
   if (!GEMINI_KEY) throw new HttpError(500, "Server hali to‘liq sozlanmagan (GEMINI_API_KEY yo‘q).", "ai_key");
-  for (const model of MODELS) {
-    try {
-      const out = extractJson(await callModel(model, prompt, true));
-      log("gemini ok:", model);
-      return out;
-    } catch (e) {
-      if (e instanceof HttpError) throw e;
-      log("gemini xato:", e.message);
+  const order = lastGoodModel ? [lastGoodModel, ...MODELS.filter((m) => m !== lastGoodModel)] : MODELS.slice();
+  for (let round = 0; round < 3; round++) {
+    if (round) await new Promise((r) => setTimeout(r, 5000 * round));
+    let tried = 0;
+    let busy = false;
+    for (const model of order) {
+      if ((deadModels.get(model) || 0) > Date.now()) continue;
+      tried++;
+      try {
+        const out = extractJson(await callModel(model, prompt, true));
+        lastGoodModel = model;
+        log("gemini ok:", model, round ? `(${round + 1}-aylana)` : "");
+        return out;
+      } catch (e) {
+        if (e instanceof HttpError) throw e;
+        if (e.status === 404) deadModels.set(model, Date.now() + 6 * 3600000);
+        if (e.status === 503 || e.status === 429 || e.status === 500) busy = true;
+        log("gemini xato:", e.message);
+      }
     }
+    if (!tried || !busy) break;   // band bo'lmasa (masalan, javob buzuq) — qayta aylanish foydasiz
   }
-  throw new HttpError(503, "AI hozir band (bepul limit tugagan bo‘lishi mumkin). Bir necha daqiqadan keyin qayta urinib ko‘ring.", "ai_busy");
+  throw new HttpError(503, "AI hozir juda band (Google serverlari yuklangan). 1–2 daqiqadan keyin qayta urinib ko‘ring.", "ai_busy");
 }
 
 // ------------------------------------------------------------------ API
