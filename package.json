@@ -1,0 +1,15 @@
+{
+  "name": "taqdimot-sayt",
+  "version": "1.0.0",
+  "description": "Mavzu bo'yicha tayyor taqdimot (PPTX/PDF) va krossvord yasaydigan sayt",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0"
+  }
+}
