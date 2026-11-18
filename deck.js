@@ -871,6 +871,58 @@ STRUCTURE
 ${outputSpec('"5-7 real sources"')}`;
   }
 
+  // 3-usul (.pptx): namunaning o'zi shablon — har bir matn joyi uchun yangi matn
+  function buildExactPrompt(sk, designs, o) {
+    const n = designs.length;
+    const used = [...new Set(designs)].sort((a, b) => a - b);
+    const q = (t) => JSON.stringify(t);
+    const KIND = { title: "title", sub: "subtitle", body: "body text", text: "text box", smart: "diagram items (one per line)" };
+    const desc = used.map((d) => {
+      const s = sk.slides[d - 1];
+      const np = s.pics.filter((x) => x.c).length;
+      const lines = s.slots.map((sl, j) => {
+        if (sl.k === "table") {
+          const rows = [];
+          for (let r = 0; r < sl.c.length; r += sl.cols) rows.push(sl.c.slice(r, r + sl.cols).map((x) => (x == null ? "(merged)" : x)));
+          return `  slot ${j + 1}: TABLE ${rows.length}x${sl.cols} — return ${rows.length} rows, each an array of ${sl.cols} cell strings ("" for merged). Original: ${q(rows)}`;
+        }
+        const avg = Math.round(sl.p.reduce((a, t) => a + t.length, 0) / Math.max(1, sl.p.length));
+        return `  slot ${j + 1}: ${KIND[sl.k] || "text"}, ${sl.p.length} line(s), ~${avg} chars per line. Original: ${q(sl.p)}`;
+      });
+      return `Design ${d} [${s.role}]${np ? ` — ${np} picture(s)` : ""}\n${lines.join("\n") || "  (no text slots)"}`;
+    }).join("\n\n");
+    const pr = o.profile || {};
+    return `You re-use a sample PowerPoint presentation as an exact template for a NEW topic. The design stays exactly the same: you only write new text for every text slot, plus image search queries.
+
+TASK
+New topic: ${o.topic}
+School subject: ${o.subject || "not specified"}
+Author (student) name: ${o.author || "not given"}
+Language of ALL text: ${LANG_NAMES[o.lang] || LANG_NAMES.uz}
+Number of slides: exactly ${n}
+Slide plan (output slide → sample design): ${designs.map((d, i) => `${i + 1}→${d}`).join(", ")}
+${pr.tone ? `Tone of the sample: ${pr.tone}\n` : ""}
+SAMPLE DESIGNS — each text slot with its number of lines, average length and ORIGINAL text. The original is about the OLD topic: never reuse its facts, only its style and the kind of content.
+${desc}
+
+${RULES_LANGUAGE}
+
+RULES
+- Return exactly ${n} slides in plan order. For each slide, "slots" has one entry per slot of its design, in the same order: a text slot → array of strings (one per line); a table slot → array of rows.
+- Text must fit the boxes: the same number of lines as the original (±1) and about the same length per line, never more than 20% longer. Titles stay short.
+- Write the same KIND of content as the original slot: a title → a slide title; a numbered list → a numbered list; a short label → a short label; a big number → a number with a short caption.
+- Slides that share a design get different content. Content slides together cover the new topic in a logical order without repeating each other.
+- [title] slide: the new topic as the title. Personal data (student name, group, teacher, university, city): the author name if given; other names → "__________", keep the labels (e.g. "Bajardi: __________").
+- [plan] slide lists the titles of the following content slides. [conclusion] sums up. [references] lists real, well-known sources (never invent, no URLs). [thanks] keeps a short thank-you line in the target language.
+- Decorative numbers like "01", "02" stay as numbering.
+- Facts: only well-established facts you are confident about. Never invent statistics, dates, quotes or names; if unsure, describe in words.
+- Images: for every picture of the design, add to "images" a short ENGLISH search query (2-5 words, concrete nouns) for a real photo or illustration that fits that slide on Wikimedia Commons, e.g. "Registan Samarkand", "Amir Timur statue", "human heart anatomy".
+
+OUTPUT
+Reply with ONLY one JSON object, no other text:
+{"title": "presentation title", "image_topic": "2-4 English words for the whole topic", "slides": [{"slots": [["line 1", "line 2"], [["cell", "cell"], ["cell", "cell"]]], "images": ["english query"]}]}`;
+  }
+
   // 2-usul: foydalanuvchining o'z matnidan — faqat matndagi ma'lumot ishlatiladi
   function buildTextPrompt(source, topic, subject, nSlides, lang) {
     const n = Math.max(4, nSlides - 5);
@@ -1021,7 +1073,7 @@ ${outputSpec(p.has_references === false ? '"empty list"' : '"5-7 real sources"')
   const api = {
     THEMES, LABELS, buildDeck, renderPptx, renderPreview, buildPrompt, buildTextPrompt, normalize, safeFilename,
     makeTheme, buildSampleAnalysisPrompt, buildSamplePrompt, normalizeProfile,
-    layoutCrossword, buildCrosswordPrompt, normalizeCrossword, tokens,
+    layoutCrossword, buildCrosswordPrompt, normalizeCrossword, tokens, buildExactPrompt,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Deck = api;

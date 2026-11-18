@@ -7,7 +7,10 @@ Ilova nima qiladi:
 - Taqdimot **uch usulda** yasaladi:
   - **💡 Mavzu bo‘yicha** (1 jeton) — mavzuni yozasiz, matnni AI o‘zi yozadi;
   - **📄 O‘z matnimdan** (1 jeton) — mustaqil ish, referat yoki konspekt matnini joylaysiz (yoki Word / .txt faylni tanlaysiz), AI uni slaydlarga bo‘lib beradi va o‘zidan yangi fakt qo‘shmaydi;
-  - **🎯 Namunadek** (2 jeton) — namuna taqdimotni (PowerPoint, PDF yoki Word) yuklaysiz va yangi mavzuni yozasiz. AI namunaning tuzilishi, slaydlar tartibi va uslubini takrorlaydi, dizayn namunaning ranglarida bo‘ladi. Namuna saqlanib qoladi.
+  - **🎯 Namunadek** (2 jeton) — namuna taqdimotni yuklaysiz va yangi mavzuni yozasiz:
+    - **PowerPoint (.pptx)** namuna — yangi taqdimot namunaning **o‘zidan** yasaladi: fon, shrift, shakllar, jadvallar va joylashuv aynan o‘zidek qoladi, faqat matnlar yangi mavzuga, rasmlar esa mavzuga mos rasmlarga (Wikimedia Commons, bepul) almashadi. Slaydlar sonini foydalanuvchi tanlaydi: «Namunadek» yoki 10/12/15/20 — ko‘p kerak bo‘lsa, namunadagi slayd dizaynlari takrorlanadi. Natija PowerPoint bo‘lib chatga keladi;
+    - **PDF yoki Word** namuna — tuzilishi va uslubi o‘xshatiladi, slaydlar ilovaning dizaynlarida yasaladi.
+    - Namuna fayli foydalanuvchining bot chatida saqlanadi (bepul), keyingi safar qayta yuklash shart emas.
 - **Do‘st taklif qilish:** har kimning o‘z havolasi bor; har 5 ta yangi do‘st uchun +2 jeton (admin paneldan o‘zgartiriladi).
 - Tayyor taqdimot **PowerPoint, PDF, Word** yoki **rasmlar (ZIP)** ko‘rinishida **bot chatiga keladi**. Krossvord ham qo‘shsa bo‘ladi.
 - Jeton tugagach, foydalanuvchi paket sotib oladi. Ikki yo‘l bor:
@@ -147,7 +150,7 @@ Eski botingizdan foydalanmoqchi bo‘lsangiz: `/mybots` → bot → **API Token*
 - **Gemini bepul limiti:** kunlik va daqiqalik so‘rovlar soni cheklangan. Bir vaqtda ko‘p odam yasasa, «AI hozir band» xabari chiqadi. Bunda foydalanuvchining limiti qaytariladi. Ko‘proq kerak bo‘lsa, AI Studio’da to‘lovni (billing) yoqasiz — bu pullik.
 - **Bir nechta akkaunt:** bitta odam bir nechta Telegram akkaunt bilan bepul taqdimotlarni qayta olishi mumkin. Shubhali akkauntlarni bloklaysiz yoki bepul sonini kamaytirasiz.
 - **Hisob-kitob:** karta to‘lovini ilova o‘zi tekshirmaydi. Pul kelganini siz kartangizdan ko‘rib, ✅ ni bosasiz. Stars to‘lovini Telegram tekshiradi.
-- **Namunadek usul:** eski `.ppt` formatini o‘qib bo‘lmaydi — PowerPoint’da PDF yoki .pptx qilib saqlash kerak. Namunadagi rasmlar ko‘chirilmaydi, faqat tuzilish, uslub va ranglar olinadi.
+- **Namunadek usul:** eski `.ppt` formatini o‘qib bo‘lmaydi — PowerPoint’da .pptx qilib saqlash kerak. Namuna 20 MB gacha. Namunadagi grafiklar (diagramma-chart) ichidagi raqamlar o‘zgarmaydi. Logo, fon va bezak rasmlari o‘z joyida qoladi, faqat mazmunli fotolar almashadi.
 - **Admin himoyasi:** bitta manzildan 5 marta noto‘g‘ri parol kiritilsa, 15 daqiqaga bloklanadi. Hammasi bo‘lib 50 ta xato urinish bo‘lsa, admin kirishi 15 daqiqaga hamma uchun yopiladi.
 - **Brauzerda ochilsa:** server manzili Safari’da ochilsa, «Telegram’da ochish» tugmasi chiqadi. Ilovaning o‘zi faqat bot ichida ishlaydi (admin panel bundan mustasno).
 - **Firebase:** bepul (Spark) reja bu ilova uchun yetarli.

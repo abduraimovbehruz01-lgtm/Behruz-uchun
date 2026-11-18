@@ -440,7 +440,7 @@ function initMain() {
   $("subject").value = "Falsafa";
   try {
     const saved = JSON.parse(localStorage.getItem(STORE) || "null");
-    if (saved && saved.data && saved.data.slides) applySaved(saved);
+    if (saved && saved.data && (saved.data.slides || (saved.data.exact && saved.data.outline))) applySaved(saved);
   } catch (e) { /* saqlangan narsa yo'q */ }
 
   let t;
@@ -517,7 +517,31 @@ function persist() {
   } catch (e) { /* brauzer saqlashga ruxsat bermasa — muhim emas */ }
 }
 
+// namunadek (.pptx) taqdimot: dizayn faylning o'zida, ilovada — slaydlar matni
+function renderExact() {
+  const d = state.data;
+  state.model = { title: d.title, slides: d.outline };
+  $("resTitle").textContent = d.title;
+  const pill = $("resPill");
+  pill.textContent = "TAYYOR";
+  pill.className = "pill ready";
+  $("resMeta").textContent = `${d.outline.length} ta slayd · dizayn namunadagidek`;
+  $("how").hidden = true;
+  $("cwBtn").hidden = $("cwDlBtn").hidden = true;
+  document.querySelectorAll('#fmtSeg input[name="fmt"]').forEach((r) => { r.parentElement.hidden = r.value !== "pptx"; });
+  document.querySelector('#fmtSeg input[value="pptx"]').checked = true;
+  $("preview").innerHTML = `<p class="ex-note">🎯 Bu taqdimot namunangizning o‘zidan yasaldi: fon, shrift, shakllar va joylashuv namunadagidek, matn va rasmlar — yangi mavzu bo‘yicha. To‘liq ko‘rinishi — PowerPoint faylda.</p>`
+    + d.outline.map((sl, i) => `<figure class="ex-slide"><span class="no">${i + 1}-slayd</span><b>${esc(sl.title || "—")}</b>`
+      + (sl.lines && sl.lines.length ? `<ul>${sl.lines.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>` : "") + "</figure>").join("");
+}
+
 function render() {
+  const ex = !!(state.data && state.data.exact);
+  if (!ex) {
+    document.querySelectorAll('#fmtSeg input[name="fmt"]').forEach((r) => { r.parentElement.hidden = false; });
+    $("cwBtn").hidden = false;
+  }
+  if (ex) return renderExact();
   state.model = Deck.buildDeck(state.data, opts());
   $("resTitle").textContent = state.model.title;
   const pill = $("resPill");
@@ -647,14 +671,16 @@ async function onGenerate(ev) {
   const started = Date.now();
   const tick = () => {
     const s = (Date.now() - started) / 1000;
+    const ex = mode === "sample" && state.me.sample && state.me.sample.exact;
     const msg = s < 8 ? (mode === "text" ? "Matningiz o‘qilmoqda…" : mode === "sample" ? "Namuna uslubi o‘rganilmoqda…" : "Mavzu o‘rganilmoqda…")
-      : s < 45 ? (mode === "text" ? "Matn slaydlarga bo‘linmoqda…" : "Slaydlar matni yozilmoqda…") : s < 90 ? "Deyarli tayyor…" : "Biroz ko‘proq vaqt ketyapti, kuting…";
+      : s < 45 ? (mode === "text" ? "Matn slaydlarga bo‘linmoqda…" : ex && s > 30 ? "Mavzuga mos rasmlar qo‘yilmoqda…" : "Slaydlar matni yozilmoqda…")
+      : s < 90 ? (ex ? "Namuna faylida matn va rasmlar almashtirilmoqda…" : "Deyarli tayyor…") : "Biroz ko‘proq vaqt ketyapti, kuting…";
     setStatus(`${msg} ${Math.round(s)} soniya. Sahifani yopmang.`, "busy", 96 * (1 - Math.exp(-s / 35)));
   };
   tick();
   const timer = setInterval(tick, 1000);
   try {
-    const r = await api("/api/generate", { body: { mode, topic, source, subject: $("subject").value.trim(), n, lang } });
+    const r = await api("/api/generate", { body: { mode, topic, source, subject: $("subject").value.trim(), author: $("author").value.trim(), n, lang } });
     state.data = r.data;
     state.deckId = r.id;
     state.lang = lang;
@@ -664,8 +690,13 @@ async function onGenerate(ev) {
     render();
     persist();
     loadHistory();
-    if (mode === "sample" && state.sampleTheme && $("theme-namuna")) { $("theme-namuna").checked = true; render(); persist(); }
-    setStatus(`✓ Tayyor! Fayl turini tanlab, «Yuklab olish»ni bosing. Qolgan jetonlar: ${r.credits} ta.`, "ok", 100);
+    if (r.data.exact) {
+      setStatus(r.sent && r.sent.ok ? `✓ Tayyor! PowerPoint fayl bot chatiga yuborildi — dizayn namunadagidek. Qolgan jetonlar: ${r.credits} ta.`
+        : `✓ Taqdimot tayyor, lekin chatga yuborilmadi: ${(r.sent && r.sent.error) || ""} «Yuklab olish»ni bosing.`, r.sent && r.sent.ok ? "ok" : "err", 100);
+    } else {
+      if (mode === "sample" && state.sampleTheme && $("theme-namuna")) { $("theme-namuna").checked = true; render(); persist(); }
+      setStatus(`✓ Tayyor! Fayl turini tanlab, «Yuklab olish»ni bosing. Qolgan jetonlar: ${r.credits} ta.`, "ok", 100);
+    }
     $("resTitle").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
     if (e.code === "no_credits") { refreshMe().catch(() => {}); openPay(); }
@@ -722,7 +753,7 @@ async function onCrossword() {
 const MODE_HINT = {
   topic: "AI mavzu bo‘yicha matnni o‘zi yozadi. 1 jeton.",
   text: "Matningizni joylang — AI uni slaydlarga bo‘lib, reja va xulosa qo‘shadi. Yangi fakt qo‘shmaydi. 1 jeton.",
-  sample: "Namuna yuklang va yangi mavzuni yozing — taqdimot namunadagi tuzilish, uslub va ranglarda yasaladi. 2 jeton.",
+  sample: "Namuna yuklang va yangi mavzuni yozing — PowerPoint namunadan taqdimot aynan o‘zidek yasaladi, faqat matn va rasmlar yangi mavzuga almashadi. 2 jeton.",
 };
 
 function initModes() {
@@ -731,7 +762,15 @@ function initModes() {
     const text = mode === "text";
     $("srcBox").hidden = !text;
     $("sampleBox").hidden = mode !== "sample";
-    $("nField").hidden = mode === "sample";
+    const ex = mode === "sample" && state.me && state.me.sample && state.me.sample.exact;
+    $("nField").hidden = mode === "sample" && !ex;
+    $("themeField").hidden = !!ex;   // namunadek: dizayn namunaning o'zidan
+    const wasShown = !$("nSame").hidden;
+    $("nSame").hidden = !ex;
+    if (ex) {
+      $("nSameTxt").textContent = `Namunadek (${state.me.sample.slideCount})`;
+      if (!wasShown) document.querySelector('input[name="n"][value="0"]').checked = true;
+    } else if (val("n") === "0") document.querySelector('input[name="n"][value="12"]').checked = true;
     $("modeHint").textContent = MODE_HINT[mode];
     $("topicLbl").innerHTML = text ? 'Mavzu <span class="hint">(ixtiyoriy — bo‘lmasa matndan olinadi)</span>'
       : mode === "sample" ? 'Yangi mavzu <span class="hint">— namunadek yasaladi</span>' : "Mavzu";
@@ -739,6 +778,7 @@ function initModes() {
     $("topic").placeholder = text ? "Masalan: Amir Temur davlati" : "Masalan: Amir Temur davlatining boshqaruv tizimi";
   };
   $("modeSeg").addEventListener("change", apply);
+  state.applyMode = apply;
   const count = () => { $("srcCount").textContent = `${$("source").value.length.toLocaleString("ru-RU").replace(/[\u00a0\u202f]/g, " ")} / 30 000`; };
   $("source").addEventListener("input", count);
   $("srcFile").addEventListener("change", async () => {
@@ -772,6 +812,7 @@ function initModes() {
 // ------------------------------------------------------------ 3-usul: namuna
 function renderSample() {
   const sm = state.me && state.me.sample;
+  if (state.applyMode) state.applyMode();
   $("sampleCard").hidden = !sm;
   $("sampleBtn").hidden = !!sm;
   if (sm) {
@@ -796,27 +837,42 @@ async function onSampleFile() {
   const started = Date.now();
   const tick = () => {
     const s = Math.round((Date.now() - started) / 1000);
-    setStatus(`Namuna o‘rganilmoqda: tuzilishi, uslubi va ranglari… ${s} soniya`, "busy", 96 * (1 - Math.exp(-s / 20)));
+    setStatus(`Namuna o‘qilmoqda: slaydlar, matn joylari va rasmlar… ${s} soniya`, "busy", 96 * (1 - Math.exp(-s / 15)));
   };
   tick();
   const timer = setInterval(tick, 1000);
   try {
+    let r;
+    if (kind === "pptx") {
+      if (f.size > 20 * 1024 * 1024) throw new ApiError("Namuna juda katta (ko‘pi bilan 20 MB). PowerPoint’da rasmlarni siqib qayta saqlang.", "big", 413);
+      let res;
+      try {
+        res = await fetch("/api/sample/pptx?name=" + encodeURIComponent(name), {
+          method: "POST", headers: { Authorization: "tma " + (TG ? TG.initData : ""), "Content-Type": "application/octet-stream" }, body: f });
+      } catch (e) { throw new ApiError("Internet aloqasi uzildi. Qayta urinib ko‘ring.", "network", 0); }
+      let j = null;
+      try { j = await res.json(); } catch (e) { /* */ }
+      if (!res.ok || !j) throw new ApiError((j && j.error) || "Namunani yuklab bo‘lmadi. Qayta urinib ko‘ring.", j && j.code, res.status);
+      r = j;
+    } else {
     const body = { name, kind };
-    if (kind === "pptx") Object.assign(body, await readPptx(f));
-    else if (kind === "docx") body.text = await readDocx(f);
+    if (kind === "docx") body.text = await readDocx(f);
     else body.pdf = await new Promise((resolve, reject) => {
       const rd = new FileReader();
       rd.onload = () => resolve(String(rd.result));
       rd.onerror = reject;
       rd.readAsDataURL(f);
     });
-    const r = await api("/api/sample", { body });
+    r = await api("/api/sample", { body });
+    }
     state.me.sample = r.sample;
     if (r.sample.colors) ensureSampleTheme(r.sample.colors, true);
     renderSample();
     render();
     persist();
-    setStatus(`✓ Namuna saqlandi: ${r.sample.summary || r.sample.slideCount + " ta slayd"} Endi yangi mavzuni yozib, «Taqdimot yasash»ni bosing.`, "ok", 100);
+    setStatus(r.sample.exact
+      ? `✓ Namuna saqlandi (${r.sample.slideCount} ta slayd) — nusxasi bot chatida ham turibdi. Endi yangi mavzuni yozib, «Taqdimot yasash»ni bosing.`
+      : `✓ Namuna saqlandi: ${r.sample.summary || r.sample.slideCount + " ta slayd"} Endi yangi mavzuni yozib, «Taqdimot yasash»ni bosing.`, "ok", 100);
   } catch (e) {
     console.error(e);
     setStatus(e instanceof ApiError ? e.message : "Namuna faylini o‘qib bo‘lmadi. Boshqa fayl yoki PDF bilan urinib ko‘ring.", "err");
@@ -827,61 +883,7 @@ async function onSampleFile() {
   }
 }
 
-// .pptx dan slaydlar matni va asosiy ranglar
-async function readPptx(file) {
-  const z = await zipOpen(file);
-  const slides = z.names.filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
-    .sort((a, b) => Number(a.match(/(\d+)\.xml$/)[1]) - Number(b.match(/(\d+)\.xml$/)[1]));
-  if (!slides.length) throw new Error("slayd topilmadi");
-  const dec = (t) => t.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
-  // rang "og'irligi": fon > shakl > matn
-  const score = new Map();
-  const add = (xml, w) => { for (const m of xml.matchAll(/<a:srgbClr val="([0-9A-Fa-f]{6})"/g)) { const h = m[1].toUpperCase(); score.set(h, (score.get(h) || 0) + w); } };
-  const weigh = (xml, k) => {
-    add(xml, k);
-    for (const m of xml.matchAll(/<p:bg>[\s\S]*?<\/p:bg>/g)) add(m[0], 8 * k);
-    for (const m of xml.matchAll(/<p:spPr>[\s\S]*?<\/p:spPr>/g)) add(m[0], 3 * k);
-  };
-  let out = "";
-  for (let i = 0; i < slides.length && out.length < 40000; i++) {
-    const xml = await z.read(slides[i]);
-    weigh(xml, 1);
-    const paras = xml.split(/<\/a:p>/).map((p) => dec([...p.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((m) => m[1]).join("")).trim()).filter(Boolean);
-    const pics = (xml.match(/<p:pic>/g) || []).length;
-    const tables = (xml.match(/<a:tbl>/g) || []).length;
-    out += `--- Slide ${i + 1}${pics ? ` [${pics} picture]` : ""}${tables ? " [table]" : ""}\n` + paras.map((t, k) => (k ? "• " : "") + t.slice(0, 300)).join("\n") + "\n";
-  }
-  for (const n of z.names.filter((n) => /^ppt\/slide(Layout|Master)s\/[^/]+\.xml$/.test(n)).slice(0, 8)) { try { weigh(await z.read(n), 0.5); } catch (e) { /* */ } }
-  const theme = {};
-  const tn = z.names.find((n) => /^ppt\/theme\/theme1\.xml$/.test(n));
-  if (tn) {
-    const xml = await z.read(tn);
-    for (const k of ["dk1", "lt1", "dk2", "lt2", "accent1", "accent2"]) {
-      const m = new RegExp(`<a:${k}>\\s*<a:(?:srgbClr val|sysClr[^>]*lastClr)="([0-9A-Fa-f]{6})"`).exec(xml);
-      if (m) theme[k] = m[1].toUpperCase();
-    }
-  }
-  return { text: out.slice(0, 40000), colors: pickColors(score, theme) };
-}
-
-function pickColors(score, theme) {
-  const lin = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
-  const rgb = (h) => [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
-  const L = (h) => { const [r, g, b] = rgb(h).map(lin); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
-  const sat = (h) => { const c = rgb(h); const mx = Math.max(...c), mn = Math.min(...c); return mx === 0 ? 0 : (mx - mn) / mx; };
-  const list = [...score.entries()].sort((a, b) => b[1] - a[1]).map((e) => e[0]);
-  const OFFICE = ["4472C4", "5B9BD5", "156082", "4F81BD", "44546A", "1F497D", "0E2841"];
-  const dark = list.find((h) => L(h) < 0.07 && (sat(h) >= 0.15 || (score.get(h) || 0) >= 8))
-    || list.find((h) => L(h) < 0.07) || theme.dk2 || theme.dk1;
-  const isAcc = (h) => h !== dark && sat(h) > 0.35 && L(h) > 0.02 && L(h) < 0.6;
-  const accent = list.find(isAcc) || (theme.accent1 && !OFFICE.includes(theme.accent1) ? theme.accent1 : null) || theme.accent1;
-  const light = list.find((h) => L(h) > 0.72 && sat(h) < 0.3 && h !== "FFFFFF") || (list.includes("FFFFFF") ? "FFFFFF" : null) || theme.lt2 || "F6F7FB";
-  const accent2 = list.find((h) => isAcc(h) && h !== accent) || null;
-  if (!accent || !dark) return null;
-  return { dark, light, accent, accent2 };
-}
-
-// ZIP (.docx, .pptx) ichidagi fayllarni o'qish
+// ZIP (.docx) ichidagi fayllarni o'qish
 async function zipOpen(file) {
   const buf = new Uint8Array(await file.arrayBuffer());
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -931,8 +933,24 @@ const HINT = {
   jpg: "ZIP faylni bosing — slayd rasmlari papkasi ochiladi.",
 };
 
+async function sendExact() {
+  state.busy = true;
+  $("dlBtn").disabled = true;
+  setStatus("PowerPoint fayl tayyorlanib, chatga yuborilmoqda…", "busy", 60);
+  try {
+    const r = await api("/api/deck/send", { body: { id: state.deckId } });
+    setStatus(`✓ «${r.name}» bot chatiga yuborildi. Oynani yopsangiz, fayl chatda turibdi.`, "ok", 100);
+  } catch (e) {
+    setStatus(e.message, "err");
+  } finally {
+    state.busy = false;
+    $("dlBtn").disabled = false;
+  }
+}
+
 async function download(onlyCw) {
   if (state.busy) return;
+  if (!onlyCw && state.data && state.data.exact) return sendExact();
   const fmt = val("fmt") || "pptx";
   const o = opts();
   render();
@@ -1002,7 +1020,8 @@ async function openDeck(id) {
     if ($("lang-" + state.lang)) $("lang-" + state.lang).checked = true;
     render();
     persist();
-    setStatus("✓ Taqdimot ochildi. Uni istalgan formatda qayta yuklab olishingiz mumkin.", "ok", 100);
+    setStatus(r.data.exact ? "✓ Taqdimot ochildi. «Yuklab olish»ni bossangiz, PowerPoint fayl chatga qayta yuboriladi."
+      : "✓ Taqdimot ochildi. Uni istalgan formatda qayta yuklab olishingiz mumkin.", "ok", 100);
     $("resTitle").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
     setStatus(e.message, "err");

@@ -15,6 +15,8 @@ const fs = require("fs");
 const path = require("path");
 const admin = require("firebase-admin");
 const Deck = require("./deck.js");
+const Exact = require("./exact.js");
+const JSZip = require("jszip");
 
 // ------------------------------------------------------------------ sozlamalar (Render → Environment)
 const PORT = Number(process.env.PORT) || 8080;
@@ -28,6 +30,7 @@ const ADMIN_SESSION_DAYS = 7;
 // Telegram bot (ixtiyoriy): sayt bot ichida Web App bo'lib ochiladi
 const TG_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || "").trim();
 const TG_API = (process.env.TELEGRAM_API_BASE || "https://api.telegram.org").replace(/\/$/, "");
+const IMG_API = (process.env.IMAGE_API_BASE || "https://commons.wikimedia.org").replace(/\/$/, "");
 const SITE_URL = (process.env.SITE_URL || process.env.RENDER_EXTERNAL_URL || "").trim().replace(/\/$/, "");
 const TG_WEBHOOK = (process.env.TELEGRAM_WEBHOOK || "on").trim().toLowerCase() !== "off";
 let TG_BOT = null;
@@ -446,10 +449,126 @@ route("GET", "/api/config", async () => {
   return { firebase: GOOGLE ? WEB_CONFIG : null, settings: publicSettings(s), telegram: TG_BOT ? { bot: TG_BOT.username } : null, warnings: [] };
 });
 
-const sampleInfo = (sm) => (sm && sm.profile ? {
-  name: sm.name, kind: sm.kind, summary: sm.profile.summary_uz || "", slideCount: sm.profile.slide_count,
-  contentSlides: sm.profile.content_slides, colors: sm.colors || null,
+// eski usulda saqlangan .pptx namuna (faqat tahlil) — qayta yuklash kerak
+const sampleInfo = (sm) => (sm && (sm.exact || (sm.profile && sm.kind !== "pptx")) ? {
+  name: sm.name, kind: sm.kind, exact: !!sm.exact,
+  summary: (sm.profile && sm.profile.summary_uz) || (sm.slides ? `${sm.slides} ta slayd` : ""),
+  slideCount: sm.slides || (sm.profile && sm.profile.slide_count) || 0,
+  contentSlides: sm.profile ? sm.profile.content_slides : 0, colors: sm.colors || null,
 } : null);
+
+// ------------------------------------------------------------------ 3-usul (.pptx): namunaning o'zidan yasash
+const sampleCache = new Map();   // fileId -> Buffer (oxirgi 3 ta)
+const builtCache = new Map();    // deckId -> {buf, name} (oxirgi 5 ta)
+const BUILT_MAX = process.env.BUILT_CACHE == null ? 5 : Math.max(0, Number(process.env.BUILT_CACHE) || 0);
+const imgCache = new Map();      // qidiruv natijalari
+const cachePut = (m, k, v, max) => { m.delete(k); m.set(k, v); while (m.size > max) m.delete(m.keys().next().value); };
+const UA = "TaqdimotBot/1.0 (+https://t.me/mustaqil_taqdimot_bot)";
+
+async function loadSample(fileId) {
+  if (sampleCache.has(fileId)) { const b = sampleCache.get(fileId); cachePut(sampleCache, fileId, b, 3); return b; }
+  const f = await tg("getFile", { file_id: fileId });
+  if (!f.ok) throw new HttpError(502, "Namuna faylini Telegram’dan olib bo‘lmadi. Namunani qayta yuklang.");
+  const r = await fetch(`${TG_API}/file/bot${TG_TOKEN}/${f.result.file_path}`, { signal: AbortSignal.timeout(60000) });
+  if (!r.ok) throw new HttpError(502, "Namuna faylini Telegram’dan olib bo‘lmadi. Qayta urinib ko‘ring.");
+  const buf = Buffer.from(await r.arrayBuffer());
+  cachePut(sampleCache, fileId, buf, 3);
+  return buf;
+}
+
+async function zipSafe(buf) {
+  const zip = await JSZip.loadAsync(buf);
+  let total = 0;
+  zip.forEach((p, f) => { total += (f._data && f._data.uncompressedSize) || 0; });
+  if (total > 300 * 1024 * 1024) throw new Error("too big");
+  return zip;
+}
+
+// Wikimedia Commons: bepul, kalitsiz rasm qidiruv
+async function commons(q) {
+  const key = q.toLowerCase();
+  const c = imgCache.get(key);
+  if (c && Date.now() - c.t < 86400000) return c.list;
+  const url = `${IMG_API}/w/api.php?action=query&format=json&generator=search&gsrnamespace=6&gsrlimit=15`
+    + `&gsrsearch=${encodeURIComponent(q + " filetype:bitmap")}&prop=imageinfo&iiprop=url|size|mime&iiurlwidth=1280`;
+  let list = [];
+  try {
+    const r = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(8000) });
+    const j = await r.json();
+    list = Object.values((j.query && j.query.pages) || {}).sort((a, b) => (a.index || 0) - (b.index || 0))
+      .filter((pg) => !/\b(logo|icon|flag of|coat of arms|signature|locator|map of|diagram|chart|graph)\b/i.test(pg.title || ""))
+      .map((pg) => (pg.imageinfo || [])[0])
+      .filter((ii) => ii && /^image\/(jpeg|png)$/.test(ii.mime) && ii.width >= 400 && ii.height >= 250 && ii.thumburl)
+      .map((ii) => ({ url: ii.thumburl, w: ii.thumbwidth || ii.width, h: ii.thumbheight || ii.height, mime: ii.mime }));
+  } catch (e) { log("rasm qidiruv xato:", q, e.message); }
+  cachePut(imgCache, key, { t: Date.now(), list }, 500);
+  return list;
+}
+async function download(img) {
+  const r = await fetch(img.url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(12000) });
+  if (!r.ok) throw new Error("http " + r.status);
+  const data = Buffer.from(await r.arrayBuffer());
+  if (data.length < 500 || data.length > 6 * 1024 * 1024) throw new Error("size");
+  const ext = data[0] === 0x89 && data[1] === 0x50 ? "png" : data[0] === 0xff && data[1] === 0xd8 ? "jpg" : null;
+  if (!ext) throw new Error("not image");
+  return { data, ext, w: img.w, h: img.h };
+}
+// har bir rasm joyi uchun mos rasm: avval slayd so'rovi, keyin umumiy mavzu
+async function findImages(jobs) {
+  const map = new Map(), list = [], usedUrl = new Set();
+  let i = 0;
+  const worker = async () => {
+    while (i < jobs.length) {
+      const job = jobs[i++];
+      for (const q of [...new Set([job.query, job.fallback, job.fallback2].filter(Boolean))]) {
+        const cands = (await commons(q)).filter((c) => !usedUrl.has(c.url));
+        // ramkaga shakli yaqin rasm afzal (juda cho'ziq rasmlar tashlanadi)
+        const fit = (c) => Math.abs(Math.log((c.w / c.h) / (job.ar || 1.33)));
+        const pick = cands.filter((c) => fit(c) < 0.8).slice(0, 3).concat(cands.slice(0, 2));
+        let got = null;
+        for (const c of pick) {
+          if (usedUrl.has(c.url)) continue;
+          usedUrl.add(c.url);
+          try { got = await download(c); got.url = c.url; break; } catch (e) { /* keyingisi */ }
+        }
+        if (got) { map.set(job.slide + ":" + job.pic, got); list.push({ k: job.slide + ":" + job.pic, url: got.url, w: got.w, h: got.h }); break; }
+      }
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  return { map, list };
+}
+async function refetchImages(list) {
+  const map = new Map();
+  await Promise.all((list || []).map(async (it) => {
+    try { const g = await download(it); map.set(it.k, g); } catch (e) { /* rasm topilmasa eski joy o'zgarmaydi */ }
+  }));
+  return map;
+}
+
+async function sendFileToChat(u, buf, name, caption) {
+  const fd = new FormData();
+  fd.append("chat_id", String(u.tgId));
+  if (caption) fd.append("caption", caption);
+  fd.append("document", new Blob([buf]), name);
+  const r = await tg("sendDocument", fd);
+  if (r.ok) return r;
+  if (r.error_code === 403 || /chat not found|bot can't initiate/i.test(r.description || ""))
+    throw new HttpError(400, "Bot sizga fayl yubora olmadi. Avval botga /start yozing, keyin «Yuklab olish»ni bosing.", "tg_start");
+  throw new HttpError(502, "Faylni Telegram’ga yuborib bo‘lmadi. «Yuklab olish»ni qayta bosing.");
+}
+
+async function exactFile(deckId, dd) {
+  const c = builtCache.get(deckId);
+  if (c) return c;
+  const sm = (await db.collection("samples").doc(dd.sid).get()).data();
+  if (!sm) throw new HttpError(410, "Namuna fayli topilmadi. Namunani qayta yuklab, taqdimotni qayta yasang.");
+  const buf = await loadSample(sm.fileId);
+  const images = await refetchImages(dd.deck.imgs);
+  const out = { buf: await Exact.build(JSZip, buf, sm.sk, dd.deck, images), name: Deck.safeFilename(dd.deck.title || "taqdimot") };
+  cachePut(builtCache, deckId, out, BUILT_MAX);
+  return out;
+}
 
 route("GET", "/api/me", async (req) => {
   const u = await auth(req);
@@ -484,7 +603,8 @@ async function checkChannel(u) {
 route("POST", "/api/sample", async (req) => {
   const u = await auth(req);
   const body = await readBody(req, 12 * 1024 * 1024);
-  const kind = ["pptx", "docx", "pdf"].includes(body.kind) ? body.kind : null;
+  const kind = ["docx", "pdf"].includes(body.kind) ? body.kind : null;
+  if (body.kind === "pptx") throw new HttpError(400, "Ilovani yopib, qayta oching — PowerPoint namuna yangi usulda yuklanadi.");
   if (!kind) throw new HttpError(400, "Namuna PowerPoint (.pptx), PDF yoki Word (.docx) bo‘lishi kerak.");
   const name = clean(body.name, 120) || "namuna";
   const text = kind === "pdf" ? "" : String(body.text || "").replace(/\r\n?/g, "\n").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, 40000);
@@ -512,6 +632,54 @@ route("POST", "/api/sample", async (req) => {
   const c = body.colors || {};
   const colors = hex(c.dark) && hex(c.accent) ? { dark: hex(c.dark), light: hex(c.light) || "F6F7FB", accent: hex(c.accent), accent2: hex(c.accent2) } : null;
   const sample = { name, kind, profile, colors, at: FV.serverTimestamp() };
+  await ref.update({ sample });
+  return { sample: sampleInfo(sample) };
+});
+
+// .pptx namuna: fayl Telegram'da saqlanadi (foydalanuvchining bot chatiga), tuzilishi — bazada
+route("POST", "/api/sample/pptx", async (req, url) => {
+  const u = await auth(req);
+  if (!u.tg) throw new HttpError(400, "Bu imkoniyat faqat Telegram ichida ishlaydi.");
+  let name = clean(url.searchParams.get("name"), 120).replace(/[\\/:*?"<>|]/g, "") || "namuna.pptx";
+  if (!/\.pptx$/i.test(name)) name += ".pptx";
+  const d = await ensureUser(u);
+  if (d.blocked) throw new HttpError(403, "Hisobingiz bloklangan.", "blocked");
+  const day = tashkentDay();
+  const cnt = d.smDay === day ? d.smCount || 0 : 0;
+  if (cnt >= 10) throw new HttpError(429, "Bugun 10 ta namuna yukladingiz. Ertaga yana urinib ko‘ring.");
+  const buf = await readRaw(req, 20 * 1024 * 1024).catch((e) => {
+    if (e instanceof HttpError && e.status === 413) throw new HttpError(413, "Namuna juda katta (ko‘pi bilan 20 MB). Rasmlarni siqib yoki kamroq slayd bilan saqlang.");
+    throw e;
+  });
+  if (buf.length < 1000) throw new HttpError(400, "Fayl bo‘sh.");
+  let sk;
+  try { sk = await Exact.parse(await zipSafe(buf)); }
+  catch (e) { throw new HttpError(400, "Faylni o‘qib bo‘lmadi. PowerPoint’da «.pptx» qilib qayta saqlab, yana yuklang."); }
+  if (sk.slides.length > 60) throw new HttpError(400, "Namunada slayd juda ko‘p (ko‘pi bilan 60).");
+  if (!sk.slides.some((x) => x.slots.length)) throw new HttpError(400, "Namunada matn topilmadi. Matnli taqdimot yuklang.");
+  const ref = db.collection("users").doc(u.uid);
+  await ref.update({ smDay: day, smCount: cnt + 1 });
+  const outline = sk.outline;
+  delete sk.outline;
+  const fd = new FormData();
+  fd.append("chat_id", String(u.tgId));
+  fd.append("caption", "🎯 Namuna saqlandi. Endi ilovada yangi mavzuni yozing — taqdimot shu namunaning o‘zidek yasaladi.");
+  fd.append("disable_notification", "true");
+  fd.append("document", new Blob([buf]), name);
+  const [r, profile] = await Promise.all([
+    tg("sendDocument", fd),
+    askGemini(Deck.buildSampleAnalysisPrompt(outline)).then((x) => Deck.normalizeProfile(x)).catch((e) => { log("namuna tahlili:", e.message); return null; }),
+  ]);
+  if (!r.ok || !r.result || !r.result.document) {
+    if (r.error_code === 403 || /chat not found|bot can't initiate/i.test(r.description || ""))
+      throw new HttpError(400, "Bot sizga yoza olmadi. Avval botga /start yozing, keyin namunani qayta yuklang.", "tg_start");
+    throw new HttpError(502, "Namunani saqlab bo‘lmadi. Qayta urinib ko‘ring.");
+  }
+  const doc = r.result.document;
+  const sid = "s_" + crypto.createHash("sha256").update(doc.file_unique_id || doc.file_id).digest("hex").slice(0, 24);
+  cachePut(sampleCache, doc.file_id, buf, 3);
+  await db.collection("samples").doc(sid).set({ uid: u.uid, fileId: doc.file_id, name, sk: JSON.parse(JSON.stringify(sk)), at: FV.serverTimestamp() });
+  const sample = { name, kind: "pptx", exact: true, sid, slides: sk.slides.length, profile: profile || null, at: FV.serverTimestamp() };
   await ref.update({ sample });
   return { sample: sampleInfo(sample) };
 });
@@ -600,6 +768,9 @@ async function handleUpdate(upd) {
 async function onReceipt(msg, s) {
   const uid = "tg_" + msg.from.id;
   const doc = msg.document;
+  if (doc && (/presentation|wordprocessing|powerpoint/.test(doc.mime_type || "") || /\.(pptx?|docx?)$/i.test(doc.file_name || "")))
+    return tg("sendMessage", { chat_id: msg.chat.id, text: "🎯 Namunani ilovadan yuklang: «Taqdimot yasash» → «🎯 Namuna» → «📎 Namuna faylini tanlash».",
+      reply_markup: appButton("🎯 Namunadek yasash") });
   if (doc && !/^image\/|application\/pdf/.test(doc.mime_type || ""))
     return tg("sendMessage", { chat_id: msg.chat.id, text: "Chekni rasm (skrinshot) yoki PDF ko‘rinishida yuboring." });
   const mine = await db.collection("payments").where("uid", "==", uid).get();
@@ -774,7 +945,13 @@ route("POST", "/api/generate", async (req) => {
   const n = [10, 12, 15, 20].includes(Number(body.n)) ? Number(body.n) : 12;
   const lang = langOf(body.lang);
   const u0 = await ensureUser(u);
-  if (mode === "sample" && !(u0.sample && u0.sample.profile)) throw new HttpError(400, "Avval namuna faylini yuklang.", "no_sample");
+  if (mode === "sample" && !sampleInfo(u0.sample)) throw new HttpError(400, "Avval namuna faylini yuklang.", "no_sample");
+  const exact = mode === "sample" && !!u0.sample.exact;
+  let smDoc = null;
+  if (exact) {
+    smDoc = (await db.collection("samples").doc(u0.sample.sid).get()).data();
+    if (!smDoc || !smDoc.sk) throw new HttpError(400, "Namunani qayta yuklang.", "no_sample");
+  }
   await checkChannel(u);
   const ref = db.collection("users").doc(u.uid);
   let profile = null;
@@ -786,8 +963,22 @@ route("POST", "/api/generate", async (req) => {
     if (mode === "sample") profile = d.sample && d.sample.profile;
     tx.update(ref, { credits: FV.increment(-cost), used: FV.increment(1) });
   });
-  let data;
+  let data, exactDeck = null, exactBuf = null, nOut = n;
   try {
+    if (exact) {
+      const sk = smDoc.sk;
+      const nReq = Math.trunc(Number(body.n)) || 0;
+      const designs = Exact.plan(sk, nReq ? Math.min(30, Math.max(3, nReq)) : sk.slides.length);
+      const prompt = Deck.buildExactPrompt(sk, designs, { topic, subject, author: clean(body.author, 80), lang, profile });
+      const [raw, sampleBuf] = await Promise.all([askGemini(prompt), loadSample(smDoc.fileId)]);
+      exactDeck = Exact.normalize(raw, sk, designs);
+      if (!exactDeck.title) exactDeck.title = topic;
+      const imgs = await findImages(Exact.imageJobs(sk, exactDeck, topic));
+      exactDeck.imgs = imgs.list;
+      exactBuf = await Exact.build(JSZip, sampleBuf, sk, exactDeck, imgs.map);
+      data = { exact: true, title: exactDeck.title, outline: Exact.outline(exactDeck) };
+      nOut = exactDeck.slides.length;
+    } else {
     const prompt = mode === "text" ? Deck.buildTextPrompt(source, topic, subject, n, lang)
       : mode === "sample" ? Deck.buildSamplePrompt(topic, subject, profile, lang) : Deck.buildPrompt(topic, subject, n, lang);
     data = Deck.normalize(await askGemini(prompt), topic || "Taqdimot");
@@ -798,24 +989,53 @@ route("POST", "/api/generate", async (req) => {
       if (profile.has_thanks === false) skip.push("thanks");
       if (skip.length) data.skip = skip;
     }
+    }
   } catch (e) {
     await ref.update({ credits: FV.increment(cost), used: FV.increment(-1) });   // xato bo'lsa jeton qaytariladi
     if (e instanceof HttpError) {
       if (e.status !== 401 && e.status !== 403) e.message += " Jetoningiz qaytarildi.";
       throw e;
     }
-    log("normalize xato:", e.message);
+    log(exact ? "namunadek yasash xato:" : "normalize xato:", e.message);
     throw new HttpError(500, "Taqdimot matnini olib bo‘lmadi. Qayta urinib ko‘ring — jetoningiz qaytarildi.");
   }
   const gen = db.collection("generations").doc();
   const batch = db.batch();
-  batch.set(gen, { uid: u.uid, email: u.email, topic: topic || clean(data.title, 120), title: clean(data.title, 120), subject, lang, n, mode, cost,
+  batch.set(gen, { uid: u.uid, email: u.email, topic: topic || clean(data.title, 120), title: clean(data.title, 120), subject, lang, n: nOut, mode, cost,
     createdAt: FV.serverTimestamp() });
-  batch.set(db.collection("decks").doc(gen.id), { uid: u.uid, data, lang, subject, createdAt: FV.serverTimestamp() });
+  batch.set(db.collection("decks").doc(gen.id), exact
+    ? { uid: u.uid, data, lang, subject, exact: true, sid: u0.sample.sid, deck: JSON.parse(JSON.stringify(exactDeck)), createdAt: FV.serverTimestamp() }
+    : { uid: u.uid, data, lang, subject, createdAt: FV.serverTimestamp() });
   batch.set(db.doc("stats/main"), { generations: FV.increment(1) }, { merge: true });
   await batch.commit();
   const after = (await ref.get()).data();
-  return { id: gen.id, data, credits: after.credits || 0, mode };
+  let sent = null;
+  if (exact) {
+    const name = Deck.safeFilename(exactDeck.title);
+    cachePut(builtCache, gen.id, { buf: exactBuf, name }, BUILT_MAX);
+    try {
+      await sendFileToChat(u, exactBuf, name, "✅ Tayyor! Dizayn — namunadagidek." + (exactDeck.imgs.length ? "\n🖼 Rasmlar: Wikimedia Commons" : ""));
+      sent = { ok: true, name };
+    } catch (e) { sent = { ok: false, error: e.message }; }
+  }
+  return { id: gen.id, data, credits: after.credits || 0, mode, sent };
+});
+
+// namunadek taqdimotni qayta yuborish (tarixdan yoki «Yuklab olish»)
+route("POST", "/api/deck/send", async (req) => {
+  const u = await auth(req);
+  if (!u.tg) throw new HttpError(400, "Bu imkoniyat faqat Telegram ichida ishlaydi.");
+  const body = await readBody(req);
+  const id = clean(body.id, 80);
+  const ds = await db.collection("decks").doc(id || "x").get();
+  if (!ds.exists || ds.data().uid !== u.uid || !ds.data().exact) throw new HttpError(404, "Taqdimot topilmadi.");
+  const hour = Date.now() - 3600000;
+  const mine = (sends.get(u.uid) || []).filter((t) => t > hour);
+  if (mine.length >= 40) throw new HttpError(429, "Bir soatda juda ko‘p fayl yubordingiz. Birozdan keyin urinib ko‘ring.");
+  sends.set(u.uid, mine.concat(Date.now()));
+  const f = await exactFile(id, ds.data());
+  await sendFileToChat(u, f.buf, f.name, "✅ Tayyor! Dizayn — namunadagidek.");
+  return { ok: true, name: f.name };
 });
 
 route("POST", "/api/crossword", async (req) => {
@@ -861,7 +1081,7 @@ route("GET", "/api/deck", async (req, url) => {
   const ds = await db.collection("decks").doc(String(url.searchParams.get("id") || "x")).get();
   if (!ds.exists || ds.data().uid !== u.uid) throw new HttpError(404, "Taqdimot topilmadi.");
   const d = ds.data();
-  return { id: ds.id, data: d.data, lang: d.lang || "uz", subject: d.subject || "" };
+  return { id: ds.id, data: d.data, lang: d.lang || "uz", subject: d.subject || "", exact: !!d.exact };
 });
 
 route("POST", "/api/payments", async (req) => {
