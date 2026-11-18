@@ -162,8 +162,8 @@
       } else decor(s);
       const tw = photo ? 6.5 : 6.8;
       const eyebrow = (subject ? L.subject(subject) : L.presentation).toUpperCase();
-      const tsize = fitSize([title], tw, 3.4, 50, 26, 1.08, 0, CW_HEAD);
-      const th = textHeight([title], tw, tsize, 1.08, 0, CW_HEAD);
+      const tsize = fitSize([title], tw, 3.4, 50, 24, 1.08, 0, CW_HEAD * 1.1);
+      const th = textHeight([title], tw, tsize, 1.08, 0, CW_HEAD * 1.1);
       const block = 0.4 + 0.3 + th + 0.4 + 0.06 + 0.35 + (author ? 0.5 : 0);
       let y = Math.max(0.5, (H - block) / 2);
       text(s, M, y, tw, 0.4, [clean(eyebrow, 60)], 14, t.ring, { bold: true, spc: 250 });
@@ -828,6 +828,17 @@ Reply with ONLY JSON: {"words": [{"answer": "...", "clue": "..."}]}`;
     ctx.restore();
   }
 
+  function chartPng(it) {
+    const S = 220;
+    const c = document.createElement("canvas");
+    c.width = Math.round(it.w * S);
+    c.height = Math.round(it.h * S);
+    const ctx = c.getContext("2d");
+    ctx.translate(-it.x * S, -it.y * S);
+    drawChart(ctx, it, S);
+    return c.toDataURL("image/png");
+  }
+
   // rasmni ramkaga "cover" usulida qirqib, JPEG qilish (PowerPoint uchun)
   async function coverJpeg(it) {
     const img = new Image();
@@ -881,20 +892,8 @@ Reply with ONLY JSON: {"words": [{"answer": "...", "clue": "..."}]}`;
         } else if (it.k === "img") {
           try { sl.addImage({ data: await coverJpeg(it), x: it.x, y: it.y, w: it.w, h: it.h }); } catch (e) { /* rasm yuklanmasa — o'tkazib yuboriladi */ }
         } else if (it.k === "chart") {
-          const pie = it.kind === "pie", line = it.kind === "line";
-          const type = pie ? pptx.ChartType.doughnut : line ? pptx.ChartType.line : pptx.ChartType.bar;
-          sl.addChart(type, [{ name: it.series || it.unit || "", labels: it.labels, values: it.values }], {
-            x: it.x, y: it.y, w: it.w, h: it.h, barDir: "col", barGapWidthPct: 60,
-            chartColors: pie ? it.colors.slice(0, it.labels.length) : [it.colors[0]],
-            showValue: !pie, showPercent: pie, showLegend: pie, legendPos: "r", legendFontSize: 14, legendColor: it.text, legendFontFace: it.font,
-            dataLabelColor: it.text, dataLabelFontSize: 13, dataLabelFontFace: it.font, dataLabelFontBold: true,
-            dataLabelPosition: pie ? "bestFit" : line ? "t" : "outEnd", dataLabelFormatCode: pie ? "0%" : "# ##0.##",
-            catAxisLabelColor: it.text, catAxisLabelFontSize: 13, catAxisLabelFontFace: it.font,
-            valAxisLabelColor: it.muted, valAxisLabelFontSize: 11, valAxisLabelFontFace: it.font,
-            valGridLine: { color: it.grid, size: 0.75 }, catGridLine: { style: "none" }, holeSize: 55,
-            lineSize: 3, lineDataSymbol: "circle", lineDataSymbolSize: 9,
-            showValAxisTitle: !!it.unit && !pie, valAxisTitle: it.unit || "", valAxisTitleColor: it.muted, valAxisTitleFontSize: 12,
-          });
+          // grafik rasm bo'lib qo'yiladi: barcha PowerPoint/Keynote ilovalarida xatosiz ochiladi, ko'rinishi PDF bilan bir xil
+          try { sl.addImage({ data: chartPng(it), x: it.x, y: it.y, w: it.w, h: it.h }); } catch (e) { /* o'tkazib yuboriladi */ }
         } else if (it.k === "table") {
           const rows = it.cells.map((row) => row.map((c) => ({
             text: c.t, options: { fill: { color: c.fill }, color: c.color, bold: c.bold },

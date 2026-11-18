@@ -31,6 +31,7 @@ const ADMIN_SESSION_DAYS = 7;
 const TG_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || "").trim();
 const TG_API = (process.env.TELEGRAM_API_BASE || "https://api.telegram.org").replace(/\/$/, "");
 const IMG_API = (process.env.IMAGE_API_BASE || "https://commons.wikimedia.org").replace(/\/$/, "");
+const WIKI_API = (process.env.WIKI_API_BASE || "https://en.wikipedia.org").replace(/\/$/, "");
 const SITE_URL = (process.env.SITE_URL || process.env.RENDER_EXTERNAL_URL || "").trim().replace(/\/$/, "");
 const TG_WEBHOOK = (process.env.TELEGRAM_WEBHOOK || "on").trim().toLowerCase() !== "off";
 let TG_BOT = null;
@@ -516,6 +517,34 @@ async function zipSafe(buf) {
   return zip;
 }
 
+const BAD_IMG = /\b(logo|icon|flag of|coat of arms|signature|locator|map of|diagram|chart|graph|plot|scheme|schema|flowchart|uml|infographic|screenshot|screen shot|scan|scanned|page \d|document|table|text|poster|cover of|stamp|banknote|seal of|emblem)\b/i;
+
+// Vikipediya: maqolaning asosiy rasmi — mavzuga eng mos foto (faqat erkin litsenziyali)
+async function wikiImages(q) {
+  const key = "w:" + q.toLowerCase();
+  const c = imgCache.get(key);
+  if (c && Date.now() - c.t < 86400000) return c.list;
+  const url = `${WIKI_API}/w/api.php?action=query&format=json&generator=search&gsrnamespace=0&gsrlimit=6`
+    + `&gsrsearch=${encodeURIComponent(q)}&prop=pageimages&piprop=thumbnail|name&pithumbsize=1280`;
+  let list = [];
+  try {
+    const r = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(8000) });
+    const j = await r.json();
+    list = Object.values((j.query && j.query.pages) || {}).sort((a, b) => (a.index || 0) - (b.index || 0))
+      .filter((pg) => pg.thumbnail && pg.thumbnail.source && /\.jpe?g$/i.test(pg.thumbnail.source) && !/\.svg/i.test(pg.thumbnail.source)
+        && !BAD_IMG.test(String(pg.pageimage || "").replace(/[_.-]+/g, " ")) && pg.thumbnail.width >= 500 && pg.thumbnail.height >= 300)
+      .map((pg) => ({ url: pg.thumbnail.source, w: pg.thumbnail.width, h: pg.thumbnail.height, mime: "image/jpeg" }));
+  } catch (e) { log("vikipediya rasm xato:", q, e.message); }
+  cachePut(imgCache, key, { t: Date.now(), list }, 500);
+  return list;
+}
+// ikkala manbadan: avval Vikipediya (aniqroq), keyin Commons
+async function searchImages(q) {
+  const [a, b] = await Promise.all([wikiImages(q), commons(q)]);
+  const seen = new Set();
+  return a.concat(b).filter((x) => (seen.has(x.url) ? false : (seen.add(x.url), true)));
+}
+
 // Wikimedia Commons: bepul, kalitsiz rasm qidiruv
 async function commons(q) {
   const key = q.toLowerCase();
@@ -528,9 +557,10 @@ async function commons(q) {
     const r = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(8000) });
     const j = await r.json();
     list = Object.values((j.query && j.query.pages) || {}).sort((a, b) => (a.index || 0) - (b.index || 0))
-      .filter((pg) => !/\b(logo|icon|flag of|coat of arms|signature|locator|map of|diagram|chart|graph)\b/i.test(pg.title || ""))
+      .filter((pg) => !BAD_IMG.test(String(pg.title || "").replace(/[_.-]+/g, " ")))
       .map((pg) => (pg.imageinfo || [])[0])
-      .filter((ii) => ii && /^image\/(jpeg|png)$/.test(ii.mime) && ii.width >= 400 && ii.height >= 250 && ii.thumburl)
+      // faqat foto (JPEG): PNG ko'pincha sxema, skrinshot yoki hujjat bo'ladi
+      .filter((ii) => ii && ii.mime === "image/jpeg" && ii.width >= 500 && ii.height >= 300 && ii.thumburl)
       .map((ii) => ({ url: ii.thumburl, w: ii.thumbwidth || ii.width, h: ii.thumbheight || ii.height, mime: ii.mime }));
   } catch (e) { log("rasm qidiruv xato:", q, e.message); }
   cachePut(imgCache, key, { t: Date.now(), list }, 500);
@@ -553,7 +583,7 @@ async function findImages(jobs) {
     while (i < jobs.length) {
       const job = jobs[i++];
       for (const q of [...new Set([job.query, job.fallback, job.fallback2].filter(Boolean))]) {
-        const cands = (await commons(q)).filter((c) => !usedUrl.has(c.url));
+        const cands = (await searchImages(q)).filter((c) => !usedUrl.has(c.url));
         // ramkaga shakli yaqin rasm afzal (juda cho'ziq rasmlar tashlanadi)
         const fit = (c) => Math.abs(Math.log((c.w / c.h) / (job.ar || 1.33)));
         const pick = cands.filter((c) => fit(c) < 0.8).slice(0, 3).concat(cands.slice(0, 2));
@@ -1421,7 +1451,7 @@ function serveStatic(req, res, pathname) {
 
 // Wikimedia rasmlari ilovaga shu server orqali beriladi (Telegram ichida boshqa saytdan rasm olish cheklanishi mumkin)
 const imgProxyCache = new Map();
-const IMG_HOSTS = new Set(["upload.wikimedia.org", (() => { try { return new URL(IMG_API).host; } catch (e) { return ""; } })()]);
+const IMG_HOSTS = new Set(["upload.wikimedia.org", ...[IMG_API, WIKI_API].map((u) => { try { return new URL(u).host; } catch (e) { return ""; } })]);
 async function proxyImage(req, res, url) {
   let target;
   try { target = new URL(url.searchParams.get("u") || ""); } catch (e) { res.writeHead(400); return res.end(); }
@@ -1458,7 +1488,7 @@ async function attachImages(data, topic) {
   const used = new Set();
   const lists = await Promise.all(jobs.map(async (j) => {
     for (const q of [...new Set([j.q, data.image_topic, topic].filter(Boolean))]) {
-      const l = await commons(q);
+      const l = await searchImages(q);
       if (l.length) return l;
     }
     return [];
