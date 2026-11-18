@@ -12,7 +12,8 @@ Ilova nima qiladi:
     - **PDF yoki Word** namuna — tuzilishi va uslubi o‘xshatiladi, slaydlar ilovaning dizaynlarida yasaladi.
     - Namuna fayli foydalanuvchining bot chatida saqlanadi (bepul), keyingi safar qayta yuklash shart emas.
 - **Do‘st taklif qilish:** har kimning o‘z havolasi bor; har 5 ta yangi do‘st uchun +2 jeton (admin paneldan o‘zgartiriladi).
-- Tayyor taqdimot **PowerPoint, PDF, Word** yoki **rasmlar (ZIP)** ko‘rinishida **bot chatiga keladi**. Krossvord ham qo‘shsa bo‘ladi.
+- Har bir taqdimotda **rasmlar** (muqova va 2-3 slaydda, Wikimedia Commons’dan — bepul) va kamida **bitta grafik** (ustunli, chiziqli yoki doira diagramma) bo‘ladi. Aniq raqam bo‘lmasa, grafik taxminiy raqamlar bilan chiziladi va ostida «taxminiy ma’lumotlar» deb yoziladi.
+- Tayyor taqdimot **PowerPoint, PDF, Word** yoki **rasmlar (ZIP)** ko‘rinishida **bot chatiga keladi**. Krossvordni «Qo‘shilsin / Qo‘shilmasin» tanlovi bilan qo‘shsa bo‘ladi.
 - Jeton tugagach, foydalanuvchi paket sotib oladi. Ikki yo‘l bor:
   - **📸 Karta orqali:** ilovada paketni tanlaydi → bot unga karta raqamini yuboradi → u chek rasmini botga yuboradi → chek sizga Telegram’da **✅ / ❌** tugmalari bilan keladi → ✅ ni bossangiz, jetonlar avtomatik tushadi va foydalanuvchiga xabar boradi.
   - **⭐ Telegram Stars:** to‘lov Telegram ichida, jeton darhol tushadi, siz hech narsa qilmaysiz.
@@ -150,7 +151,7 @@ Eski botingizdan foydalanmoqchi bo‘lsangiz: `/mybots` → bot → **API Token*
 - **Gemini bepul limiti:** kunlik va daqiqalik so‘rovlar soni cheklangan. Bir vaqtda ko‘p odam yasasa, «AI hozir band» xabari chiqadi. Bunda foydalanuvchining limiti qaytariladi. Ko‘proq kerak bo‘lsa, AI Studio’da to‘lovni (billing) yoqasiz — bu pullik.
 - **Bir nechta akkaunt:** bitta odam bir nechta Telegram akkaunt bilan bepul taqdimotlarni qayta olishi mumkin. Shubhali akkauntlarni bloklaysiz yoki bepul sonini kamaytirasiz.
 - **Hisob-kitob:** karta to‘lovini ilova o‘zi tekshirmaydi. Pul kelganini siz kartangizdan ko‘rib, ✅ ni bosasiz. Stars to‘lovini Telegram tekshiradi.
-- **Namunadek usul:** eski `.ppt` formatini o‘qib bo‘lmaydi — PowerPoint’da .pptx qilib saqlash kerak. Namuna 20 MB gacha. Namunadagi grafiklar (diagramma-chart) ichidagi raqamlar o‘zgarmaydi. Logo, fon va bezak rasmlari o‘z joyida qoladi, faqat mazmunli fotolar almashadi.
+- **Namunadek usul:** eski `.ppt` formatini o‘qib bo‘lmaydi — PowerPoint’da .pptx qilib saqlash kerak. Namuna 20 MB gacha. Namunadagi grafiklar (chart) raqamlari ham yangi mavzuga almashadi (grafik ichidagi Excel jadvaliga bog‘lanish olib tashlanadi). Logo, fon va bezak rasmlari o‘z joyida qoladi, faqat mazmunli fotolar almashadi.
 - **Admin himoyasi:** bitta manzildan 5 marta noto‘g‘ri parol kiritilsa, 15 daqiqaga bloklanadi. Hammasi bo‘lib 50 ta xato urinish bo‘lsa, admin kirishi 15 daqiqaga hamma uchun yopiladi.
 - **Brauzerda ochilsa:** server manzili Safari’da ochilsa, «Telegram’da ochish» tugmasi chiqadi. Ilovaning o‘zi faqat bot ichida ishlaydi (admin panel bundan mustasno).
 - **Firebase:** bepul (Spark) reja bu ilova uchun yetarli.

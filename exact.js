@@ -92,7 +92,51 @@
     }
     const dm = /<dgm:relIds\b([^>]*?)\/?>/.exec(el);
     if (dm) return { k: "smart", dm: attrs(dm[1])["r:dm"] };
+    const chm = /<c:chart\b([^>]*?)\/?>/.exec(el);
+    if (chm && attrs(chm[1])["r:id"]) return { k: "chart", rid: attrs(chm[1])["r:id"] };
     return null;
+  }
+
+  // ------------------------------------------------------------ grafiklar (chart): raqamlar yangi mavzuga almashadi
+  const ptVals = (blk) => [...String(blk || "").matchAll(/<c:pt idx="(\d+)"[^>]*>\s*<c:v>([^<]*)<\/c:v>/g)]
+    .sort((a, b) => Number(a[1]) - Number(b[1])).map((m) => dec(m[2]));
+  function chartInfo(xml) {
+    const tm = /<c:(bar|bar3D|line|line3D|pie|pie3D|doughnut|area|area3D|radar|ofPie)Chart>/.exec(xml || "");
+    if (!tm) return null;
+    const ser = [];
+    let cats = [];
+    for (const m of xml.matchAll(/<c:ser>([\s\S]*?)<\/c:ser>/g)) {
+      const b = m[1];
+      const tx = /<c:tx>[\s\S]*?<\/c:tx>/.exec(b);
+      const name = tx ? (ptVals(tx[0])[0] || dec((/<c:v>([^<]*)<\/c:v>/.exec(tx[0]) || [])[1] || "")) : "";
+      const c = ptVals((/<c:cat>[\s\S]*?<\/c:cat>/.exec(b) || [])[0]);
+      const v = ptVals((/<c:val>[\s\S]*?<\/c:val>/.exec(b) || [])[0]).map(Number);
+      if (!v.length) continue;
+      if (c.length > cats.length) cats = c;
+      ser.push({ n: cut(name, 60), v: v.slice(0, 24).map((x) => (Number.isFinite(x) ? x : 0)) });
+      if (ser.length >= 6) break;
+    }
+    if (!ser.length) return null;
+    const title = (/<c:title>([\s\S]*?)<\/c:title>/.exec(xml) || [])[1];
+    return { t: tm[1].replace(/3D$/, ""), cats: cats.slice(0, 24).map((x) => cut(x, 40)), ser, title: title ? cut(bodyParas(title).join(" "), 80) : "" };
+  }
+  function setPts(blk, values) {
+    let i = 0;
+    return blk.replace(/(<c:pt idx="\d+"[^>]*>\s*<c:v>)([^<]*)(<\/c:v>)/g, (m, a, v, b) => { const nv = values[i++]; return nv == null || nv === "" ? m : a + enc(String(nv)) + b; });
+  }
+  function fillChartXml(xml, ch) {
+    let si = 0;
+    xml = xml.replace(/<c:ser>([\s\S]*?)<\/c:ser>/g, (m, b) => {
+      const sr = ch.ser[si++];
+      if (!sr) return m;
+      b = b.replace(/<c:tx>[\s\S]*?<\/c:tx>/, (tx) => (/<c:pt /.test(tx) ? setPts(tx, [sr.n]) : tx.replace(/<c:v>[^<]*<\/c:v>/, `<c:v>${enc(sr.n)}</c:v>`)));
+      b = b.replace(/<c:cat>[\s\S]*?<\/c:cat>/, (blk) => setPts(blk, ch.cats));
+      b = b.replace(/<c:val>[\s\S]*?<\/c:val>/, (blk) => setPts(blk, sr.v.map((x) => String(x))));
+      return "<c:ser>" + b + "</c:ser>";
+    });
+    if (ch.title) xml = xml.replace(/<c:title>[\s\S]*?<\/c:title>/, (tt) => { let first = true; return tt.replace(/<a:t>[^<]*<\/a:t>/g, () => { if (first) { first = false; return `<a:t>${enc(ch.title)}</a:t>`; } return "<a:t></a:t>"; }); });
+    // ichki Excel jadvali eski raqamlarda qoladi — ko'rinadigan raqamlar bilan chalkashmasligi uchun bog'lanish olib tashlanadi
+    return xml.replace(/<c:externalData\b[^>]*\/>|<c:externalData\b[^>]*>[\s\S]*?<\/c:externalData>/g, "");
   }
   const slotOf = (el) => (el.startsWith("<p:sp") ? spSlot(el) : gfSlot(el));
 
@@ -155,6 +199,10 @@
           const r = rels.get(sl.dm);
           const data = r ? await readText(zip, resolve(p, r.Target)) : null;
           slots.push({ k: "smart", p: smartNodes(data).map((n) => n.t) });
+        } else if (sl.k === "chart") {
+          const r = rels.get(sl.rid);
+          const info = r ? chartInfo(await readText(zip, resolve(p, r.Target))) : null;
+          slots.push(info ? Object.assign({ k: "chart" }, info) : { k: "chart", t: "", cats: [], ser: [] });
         } else slots.push(sl);
       }
       const pics = [];
@@ -173,7 +221,7 @@
     const slides = raw.map((s, i) => ({
       role: roleOf(s.slots, i),
       slots: s.slots.map((sl) => (sl.k === "table" ? { k: "table", cols: sl.cols, c: sl.c.map((x) => (x == null ? null : cut(x, 120))) }
-        : { k: sl.k, p: sl.p.slice(0, 30).map((x) => cut(x, 220)) })),
+        : sl.k === "chart" ? sl : { k: sl.k, p: sl.p.slice(0, 30).map((x) => cut(x, 220)) })),
       // mazmunli rasm: faqat shu slaydda ishlatilgan, o'rtacha kattalikdagi foto (fon, logo va ikonkalar emas)
       pics: s.pics.map((pc) => {
         const fr = pc.cx && pc.cy ? (pc.cx * pc.cy) / area : 0.25;
@@ -184,9 +232,9 @@
     let outline = "";
     slides.forEach((s, i) => {
       const np = s.pics.filter((x) => x.c).length;
-      outline += `--- Slide ${i + 1}${np ? ` [${np} picture]` : ""}${s.slots.some((x) => x.k === "table") ? " [table]" : ""}${s.slots.some((x) => x.k === "smart") ? " [diagram]" : ""}\n`;
+      outline += `--- Slide ${i + 1}${np ? ` [${np} picture]` : ""}${s.slots.some((x) => x.k === "table") ? " [table]" : ""}${s.slots.some((x) => x.k === "smart") ? " [diagram]" : ""}${s.slots.some((x) => x.k === "chart") ? " [chart]" : ""}\n`;
       s.slots.forEach((sl, k) => {
-        const lines = sl.k === "table" ? [sl.c.filter((x) => x).join(" | ")] : sl.p;
+        const lines = sl.k === "table" ? [sl.c.filter((x) => x).join(" | ")] : sl.k === "chart" ? [`[chart: ${sl.cats.join(", ")}]`] : sl.p;
         lines.forEach((t, j) => { outline += (k === 0 && j === 0 ? "" : "• ") + t + "\n"; });
       });
     });
@@ -235,6 +283,17 @@
       const rs = Array.isArray(r.slots) ? r.slots : [];
       const s = skS.slots.map((sl, j) => {
         const v = rs[j];
+        if (sl.k === "chart") {
+          if (!sl.ser.length || !v || typeof v !== "object" || Array.isArray(v)) return { ch: null };
+          const num = (x) => { const n = typeof x === "number" ? x : Number(String(x).replace(/\s+/g, "").replace(",", ".")); return Number.isFinite(n) ? n : null; };
+          const cats = sl.cats.map((o, i) => line((Array.isArray(v.categories) ? v.categories : [])[i]) || o);
+          const ser = sl.ser.map((o, k) => {
+            const sv = (Array.isArray(v.series) ? v.series : [])[k] || {};
+            const vals = Array.isArray(sv.values) ? sv.values : [];
+            return { n: line(sv.name) || o.n, v: o.v.map((ov, i) => { const nv = num(vals[i]); return nv == null ? ov : nv; }) };
+          });
+          return { ch: { title: line(v.title).slice(0, 80), cats, ser } };
+        }
         if (sl.k === "table") {
           const rows = Array.isArray(v) ? v : [];
           const grid = rows.every(Array.isArray) ? rows : [];
@@ -304,17 +363,18 @@
   }
   function fillSlide(xml, ns) {
     let k = 0;
-    const smart = [];
+    const smart = [], charts = [];
     xml = xml.replace(re(RE_ELEM), (el) => {
       const sl = slotOf(el);
       if (!sl) return el;
       const v = ns[k++];
       if (!v) return el;
       if (sl.k === "smart") { if (v.p) smart.push({ dm: sl.dm, p: v.p }); return el; }
+      if (sl.k === "chart") { if (v.ch) charts.push({ rid: sl.rid, ch: v.ch }); return el; }
       if (sl.k === "table") return v.c ? fillTable(el, v.c) : el;
       return v.p ? el.replace(/<p:txBody>[\s\S]*?<\/p:txBody>/, (tb) => fillBody(tb, v.p)) : el;
     });
-    return { xml, smart };
+    return { xml, smart, charts };
   }
   async function fillSmart(zip, slidePath, rels, sm) {
     const r = rels.get(sm.dm);
@@ -447,6 +507,13 @@
       xml = filled.xml;
       const relMap = parseRels(rels);
       for (const sm of filled.smart) { try { await fillSmart(zip, path, relMap, sm); } catch (e) { /* diagramma o'zgarmay qoladi */ } }
+      for (const c of filled.charts) {
+        const r = relMap.get(c.rid);
+        if (!r) continue;
+        const cp = resolve(path, r.Target);
+        const cx = await readText(zip, cp);
+        if (cx) zip.file(cp, fillChartXml(cx, c.ch));
+      }
       // rasmlar
       let pi = 0;
       const adds = [];
@@ -513,6 +580,7 @@
         if (!x) return;
         if (x.p) lines.push(...x.p);
         if (x.c) { const t = x.c.filter(Boolean).slice(0, 8).join(" · "); if (t) lines.push(t); }
+        if (x.ch) lines.push("📊 " + x.ch.cats.filter(Boolean).slice(0, 6).join(", "));
       });
       return { title: lines[0] || "", lines: lines.slice(1, 9) };
     });

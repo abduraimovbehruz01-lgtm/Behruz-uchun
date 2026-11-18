@@ -191,6 +191,28 @@
     });
   }
 
+  // rasm: ramkaga "cover" usulida (qirqib) chiziladi
+  function drawImg(ctx, it, S) {
+    const img = it._img;
+    if (!img) return;
+    const iw = img.naturalWidth, ih = img.naturalHeight, A = it.w / it.h, B = iw / ih;
+    let sx = 0, sy = 0, sw = iw, sh = ih;
+    if (B > A) { sw = ih * A; sx = (iw - sw) / 2; } else { sh = iw / A; sy = (ih - sh) / 2; }
+    ctx.drawImage(img, sx, sy, sw, sh, it.x * S, it.y * S, it.w * S, it.h * S);
+  }
+  async function preload(model) {
+    const cache = new Map();
+    for (const sl of model.slides) for (const it of sl.items) {
+      if (it.k !== "img" || it._img) continue;
+      if (!cache.has(it.src)) {
+        const im = new Image();
+        im.src = it.src;
+        cache.set(it.src, im.decode().then(() => im).catch(() => null));
+      }
+      it._img = await cache.get(it.src);
+    }
+  }
+
   function renderSlide(slide, canvas, S) {
     canvas.width = Math.round(W * S);
     canvas.height = Math.round(H * S);
@@ -201,6 +223,8 @@
       if (it.k === "rect") drawRect(ctx, it, S);
       else if (it.k === "text") drawText(ctx, it, S);
       else if (it.k === "table") drawTable(ctx, it, S);
+      else if (it.k === "img") drawImg(ctx, it, S);
+      else if (it.k === "chart" && root.Deck) root.Deck.drawChart(ctx, it, S);
     }
     return canvas;
   }
@@ -217,6 +241,7 @@
   }
 
   async function toPdf(model, onProgress) {
+    await preload(model);
     const S = 144;   // 1920×1080 piksel
     const canvas = document.createElement("canvas");
     const enc = new TextEncoder();
@@ -305,6 +330,7 @@
   }
 
   async function toImagesZip(model, baseName, onProgress) {
+    await preload(model);
     const S = 144;
     const canvas = document.createElement("canvas");
     const files = [];
@@ -416,6 +442,13 @@
         if (!s) continue;
         out.push(bullet([run(str(s.value), { bold: true }), run(str(s.label) ? ` — ${str(s.label)}` : "")]));
       }
+      if (str(sd.source)) out.push(para([run(`${L.source}: ${str(sd.source)}`, { italic: true, size: 12 })], { indent: 'w:firstLine="709"' }));
+    } else if (t === "chart") {
+      const labels = arr(sd.labels).map(str), values = arr(sd.values);
+      const head = [str(sd.series) || "—", str(sd.unit) ? `${L.value || "Qiymat"} (${str(sd.unit)})` : (L.value || "Qiymat")];
+      const rows = [head].concat(labels.map((l, i) => [l, String(values[i] == null ? "" : values[i]).replace(".", ",")]));
+      out.push(table(rows.map((r, ri) => r.map((c) => ({ t: c, fill: ri === 0 ? "E7ECF3" : null }))), [Math.floor(TEXT_W * 0.62), Math.floor(TEXT_W * 0.38)], { header: true, size: 12 }));
+      if (str(sd.note)) out.push(text(str(sd.note)));
       if (str(sd.source)) out.push(para([run(`${L.source}: ${str(sd.source)}`, { italic: true, size: 12 })], { indent: 'w:firstLine="709"' }));
     } else if (t === "timeline") {
       for (const e of arr(sd.events)) {

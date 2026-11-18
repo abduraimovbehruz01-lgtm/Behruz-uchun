@@ -37,15 +37,15 @@
 
   const LABELS = {
     uz: { plan: "Reja", conclusion: "Xulosa", references: "Foydalanilgan adabiyotlar", author: "Bajardi",
-      thanks: "E’tiboringiz uchun rahmat!", example: "Misol", source: "Manba", presentation: "TAQDIMOT",
+      thanks: "E’tiboringiz uchun rahmat!", example: "Misol", source: "Manba", presentation: "TAQDIMOT", value: "Qiymat",
       subject: (s) => `${s} fanidan taqdimot`,
       cw: "Krossvord", cwClues: "Krossvord savollari", cwAnswers: "Krossvord javoblari", across: "Eniga", down: "Bo‘yiga" },
     ru: { plan: "План", conclusion: "Заключение", references: "Список литературы", author: "Выполнил(а)",
-      thanks: "Спасибо за внимание!", example: "Пример", source: "Источник", presentation: "ПРЕЗЕНТАЦИЯ",
+      thanks: "Спасибо за внимание!", example: "Пример", source: "Источник", presentation: "ПРЕЗЕНТАЦИЯ", value: "Значение",
       subject: (s) => `Презентация · ${s}`,
       cw: "Кроссворд", cwClues: "Вопросы кроссворда", cwAnswers: "Ответы кроссворда", across: "По горизонтали", down: "По вертикали" },
     en: { plan: "Outline", conclusion: "Conclusion", references: "References", author: "Prepared by",
-      thanks: "Thank you for your attention!", example: "Example", source: "Source", presentation: "PRESENTATION",
+      thanks: "Thank you for your attention!", example: "Example", source: "Source", presentation: "PRESENTATION", value: "Value",
       subject: (s) => `${s} · Presentation`,
       cw: "Crossword", cwClues: "Crossword clues", cwAnswers: "Crossword answers", across: "Across", down: "Down" },
   };
@@ -106,6 +106,9 @@
     let page = 0;
 
     const slide = (bg) => { const s = { bg, items: [] }; slides.push(s); page += 1; return s; };
+    // rasm: server bergan manzil, ilova yuklab olgan bo'lsa (opts.images) chiziladi
+    const imgOf = (ref) => { const u = ref && (ref.u || ref.url); const im = u && opts.images && opts.images[u]; return im && im.src ? im : null; };
+    const image = (s, x, y, w, h, im) => s.items.push({ k: "img", x, y, w, h, src: im.src, iw: im.iw, ih: im.ih });
     const rect = (s, x, y, w, h, o) => s.items.push(Object.assign({ k: "rect", x, y, w, h, shape: "rect" }, o));
     const text = (s, x, y, w, h, paras, size, color, o) => {
       o = o || {};
@@ -152,8 +155,12 @@
     // ---- muqova
     function cover() {
       const s = slide(t.dark);
-      decor(s);
-      const tw = 6.8;
+      const photo = imgOf(data.cover_image);
+      if (photo) {
+        image(s, 7.75, 0, W - 7.75, H, photo);
+        rect(s, 7.75, 0, 0.08, H, { fill: t.accent });
+      } else decor(s);
+      const tw = photo ? 6.5 : 6.8;
       const eyebrow = (subject ? L.subject(subject) : L.presentation).toUpperCase();
       const tsize = fitSize([title], tw, 3.4, 50, 26, 1.08, 0, CW_HEAD);
       const th = textHeight([title], tw, tsize, 1.08, 0, CW_HEAD);
@@ -206,7 +213,13 @@
       if (!items.length && !example) return;
       const s = slide(t.light);
       header(s, sd.title);
-      const colW = CONTENT_W;
+      const photo = !fallback && imgOf(sd.img);
+      const imgW = 4.55;
+      const colW = photo ? CONTENT_W - imgW - 0.45 : CONTENT_W;
+      if (photo) {
+        image(s, M + colW + 0.45, TOP, imgW, CONTENT_H, photo);
+        rect(s, M + colW + 0.45, TOP + CONTENT_H - 0.08, imgW, 0.08, { fill: t.accent });
+      }
       let exH = 0, exParas = null, exSize = 0;
       if (example) {
         exParas = [[{ t: `${L.example}: `, bold: true, color: t.accent }, { t: example }]];
@@ -327,6 +340,36 @@
         text(s, x + 0.4, y + 0.35 + vh, iw, ch - vh - 0.55, [labels[i]], lsize, t.on_dark_muted, { spacing: 1.2 });
       }
       footer(s, true, sd.source);
+    }
+
+    // ---- grafik (diagramma)
+    function chart(sd) {
+      const labels = list(sd.labels), values = list(sd.values);
+      if (labels.length < 2) return bullets(sd, true);
+      const s = slide(t.light);
+      header(s, sd.title);
+      const note = clean(sd.note, 160), unit = clean(sd.unit, 16), series = clean(sd.series, 50);
+      const sideW = note ? 3.7 : 0;
+      const cw = CONTENT_W - (note ? sideW + 0.4 : 0);
+      const pal = [t.accent, t.accent2, t.ring, t.dark, t.accent_on_dark, t.border, t.muted, t.faint].map((c) => c || t.accent);
+      s.items.push({ k: "chart", x: M, y: TOP - 0.05, w: cw, h: CONTENT_H + 0.05, kind: sd.chart_type || "bar",
+        labels, values, unit, series, colors: pal, text: t.text, muted: t.muted, grid: t.border, bg: t.light, font: BODY });
+      if (note) {
+        const x = M + cw + 0.4;
+        rect(s, x, TOP, sideW, CONTENT_H, { shape: "round", radius: 0.14, fill: t.card, line: t.border });
+        rect(s, x, TOP, 0.09, CONTENT_H, { fill: t.accent });
+        let y = TOP + 0.35;
+        if (series || unit) {
+          const head = [series, unit && `(${unit})`].filter(Boolean).join(" ");
+          const hs = fitSize([head], sideW - 0.6, 1.0, 16, 12);
+          const hh = textHeight([head], sideW - 0.6, hs, 1.15);
+          text(s, x + 0.35, y, sideW - 0.6, hh, [head], hs, t.accent, { bold: true, spacing: 1.15 });
+          y += hh + 0.2;
+        }
+        const ns = fitSize([note], sideW - 0.6, BOTTOM - y - 0.3, 22, 13, 1.25);
+        text(s, x + 0.35, y, sideW - 0.6, BOTTOM - y - 0.3, [note], ns, t.text, { spacing: 1.25 });
+      }
+      footer(s, false, sd.source);
     }
 
     // ---- xronologiya
@@ -470,7 +513,7 @@
       crossword();
       return { title: `${L.cw} — ${title}`, author, slides };
     }
-    const renderers = { bullets: (sd) => bullets(sd, false), cards, table, comparison, stats, timeline, quote };
+    const renderers = { bullets: (sd) => bullets(sd, false), cards, table, comparison, stats, timeline, quote, chart };
     cover();
     if (!skip.has("plan")) plan();
     for (const sd of list(data.slides)) {
@@ -670,6 +713,137 @@ Reply with ONLY JSON: {"words": [{"answer": "...", "clue": "..."}]}`;
 
   function cap(s) { return s.charAt(0) + s.slice(1).toLowerCase(); }
 
+  // ------------------------------------------------------------ grafikni canvas'ga chizish (ko'rinish, PDF, rasm)
+  const fmtNum = (v) => {
+    const a = Math.abs(v);
+    const r = a >= 100 ? Math.round(v) : a >= 10 ? Math.round(v * 10) / 10 : Math.round(v * 100) / 100;
+    return String(r).replace(/\B(?=(\d{3})+(?!\d))/g, " ").replace(".", ",");
+  };
+  function drawChart(ctx, it, S) {
+    const P = S / 72, X = it.x * S, Y = it.y * S, Wd = it.w * S, Ht = it.h * S;
+    const col = (c, a) => { const n = parseInt(c, 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a == null ? 1 : a})`; };
+    const font = (sz, b) => `${b ? "700" : "400"} ${sz * P}px Arial, Helvetica, sans-serif`;
+    const fitText = (txt, maxW, sz, b) => {
+      ctx.font = font(sz, b);
+      if (ctx.measureText(txt).width <= maxW) return txt;
+      let t = txt;
+      while (t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0, -1);
+      return t + "…";
+    };
+    const n = it.labels.length, vals = it.values;
+    ctx.save();
+    ctx.textBaseline = "alphabetic";
+    if (it.kind === "pie") {
+      const total = vals.reduce((a, v) => a + Math.max(0, v), 0) || 1;
+      const r = Math.min(Ht * 0.44, Wd * 0.26), cx = X + r + 0.3 * S, cy = Y + Ht / 2;
+      let a0 = -Math.PI / 2;
+      vals.forEach((v, i) => {
+        const a1 = a0 + (Math.max(0, v) / total) * Math.PI * 2;
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, r, a0, a1); ctx.closePath();
+        ctx.fillStyle = col(it.colors[i % it.colors.length]); ctx.fill();
+        ctx.strokeStyle = col(it.bg); ctx.lineWidth = 2 * P; ctx.stroke();
+        a0 = a1;
+      });
+      ctx.beginPath(); ctx.arc(cx, cy, r * 0.55, 0, Math.PI * 2); ctx.fillStyle = col(it.bg); ctx.fill();
+      if (it.unit || it.series) {
+        ctx.fillStyle = col(it.muted); ctx.textAlign = "center";
+        ctx.fillText(fitText(it.unit || "", r * 0.95, 14, true), cx, cy + 5 * P);
+      }
+      // izoh (legend)
+      const lx = cx + r + 0.45 * S, lw = X + Wd - lx;
+      const rowH = Math.min(0.62 * S, Ht / n);
+      let ly = cy - (rowH * n) / 2;
+      ctx.textAlign = "left";
+      vals.forEach((v, i) => {
+        ctx.fillStyle = col(it.colors[i % it.colors.length]);
+        ctx.fillRect(lx, ly + rowH / 2 - 7 * P, 14 * P, 14 * P);
+        const pct = Math.round((Math.max(0, v) / total) * 1000) / 10;
+        ctx.fillStyle = col(it.text);
+        const valTxt = it.unit === "%" ? `${fmtNum(v)}%` : `${pct}%`;
+        const label = fitText(it.labels[i], lw - 1.3 * S, 15);
+        ctx.font = font(15); ctx.fillText(label, lx + 24 * P, ly + rowH / 2 + 5 * P);
+        ctx.font = font(15, true); ctx.textAlign = "right";
+        ctx.fillText(valTxt, X + Wd, ly + rowH / 2 + 5 * P);
+        ctx.textAlign = "left";
+        ly += rowH;
+      });
+      ctx.restore();
+      return;
+    }
+    // ustunli va chiziqli grafik
+    const maxV = Math.max(0, ...vals), minV = Math.min(0, ...vals);
+    const step = (() => { const raw = (maxV - minV) / 4 || 1; const mag = Math.pow(10, Math.floor(Math.log10(raw))); const f = raw / mag; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * mag; })();
+    const top = Math.ceil(maxV / step) * step || step, bot = Math.floor(minV / step) * step;
+    ctx.font = font(12);
+    const tickW = Math.max(...[top, bot, (top + bot) / 2].map((v) => ctx.measureText(fmtNum(v)).width)) + 10 * P;
+    const left = X + tickW, right = X + Wd - 6 * P;
+    const head = it.unit ? 22 * P : 8 * P;
+    const plotT = Y + head + 18 * P, plotB = Y + Ht - 46 * P;
+    const yOf = (v) => plotB - ((v - bot) / (top - bot)) * (plotB - plotT);
+    if (it.unit) { ctx.fillStyle = col(it.muted); ctx.font = font(12, true); ctx.textAlign = "left"; ctx.fillText(it.unit, X, Y + 14 * P); }
+    ctx.strokeStyle = col(it.grid); ctx.lineWidth = 1 * P; ctx.fillStyle = col(it.muted); ctx.font = font(12); ctx.textAlign = "right";
+    for (let v = bot; v <= top + step / 2; v += step) {
+      const y = yOf(v);
+      ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke();
+      ctx.fillText(fmtNum(v), left - 8 * P, y + 4 * P);
+    }
+    const slot = (right - left) / n;
+    const labSize = n > 6 ? 11 : 13;
+    ctx.textAlign = "center";
+    it.labels.forEach((lb, i) => {
+      const cx = left + slot * (i + 0.5);
+      ctx.fillStyle = col(it.text);
+      const words = String(lb).split(/\s+/);
+      let l1 = "", l2 = "";
+      ctx.font = font(labSize);
+      for (const w of words) { if (!l2 && ctx.measureText((l1 ? l1 + " " : "") + w).width <= slot - 6 * P) l1 = (l1 ? l1 + " " : "") + w; else l2 = (l2 ? l2 + " " : "") + w; }
+      ctx.fillText(l1 || fitText(lb, slot - 6 * P, labSize), cx, plotB + 18 * P);
+      if (l2) ctx.fillText(fitText(l2, slot - 6 * P, labSize), cx, plotB + 34 * P);
+    });
+    if (it.kind === "line") {
+      ctx.strokeStyle = col(it.colors[0]); ctx.lineWidth = 3.5 * P; ctx.lineJoin = "round";
+      ctx.beginPath();
+      vals.forEach((v, i) => { const x = left + slot * (i + 0.5), y = yOf(v); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
+      ctx.stroke();
+      vals.forEach((v, i) => {
+        const x = left + slot * (i + 0.5), y = yOf(v);
+        ctx.beginPath(); ctx.arc(x, y, 6 * P, 0, Math.PI * 2); ctx.fillStyle = col(it.bg); ctx.fill();
+        ctx.lineWidth = 3 * P; ctx.strokeStyle = col(it.colors[0]); ctx.stroke();
+        ctx.fillStyle = col(it.text); ctx.font = font(13, true); ctx.fillText(fmtNum(v), x, y - 12 * P);
+      });
+    } else {
+      const bw = Math.min(slot * 0.62, 1.4 * S);
+      vals.forEach((v, i) => {
+        const cx = left + slot * (i + 0.5), y0 = yOf(0), y1 = yOf(v);
+        ctx.fillStyle = col(i === vals.indexOf(maxV) ? it.colors[0] : it.colors[1] || it.colors[0], i === vals.indexOf(maxV) ? 1 : 0.85);
+        const r = Math.min(6 * P, bw / 4), yt = Math.min(y0, y1), h = Math.abs(y1 - y0);
+        ctx.beginPath();
+        ctx.moveTo(cx - bw / 2, yt + h); ctx.lineTo(cx - bw / 2, yt + r); ctx.quadraticCurveTo(cx - bw / 2, yt, cx - bw / 2 + r, yt);
+        ctx.lineTo(cx + bw / 2 - r, yt); ctx.quadraticCurveTo(cx + bw / 2, yt, cx + bw / 2, yt + r); ctx.lineTo(cx + bw / 2, yt + h); ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = col(it.text); ctx.font = font(14, true);
+        ctx.fillText(fmtNum(v), cx, (v >= 0 ? y1 - 8 * P : y1 + 18 * P));
+      });
+    }
+    ctx.restore();
+  }
+
+  // rasmni ramkaga "cover" usulida qirqib, JPEG qilish (PowerPoint uchun)
+  async function coverJpeg(it) {
+    const img = new Image();
+    img.src = it.src;
+    await img.decode();
+    const iw = img.naturalWidth || it.iw, ih = img.naturalHeight || it.ih;
+    const A = it.w / it.h, B = iw / ih;
+    let sx = 0, sy = 0, sw = iw, sh = ih;
+    if (B > A) { sw = ih * A; sx = (iw - sw) / 2; } else { sh = iw / A; sy = (ih - sh) / 2; }
+    const c = document.createElement("canvas");
+    c.width = Math.min(1600, Math.round(it.w * 150));
+    c.height = Math.round(c.width / A);
+    c.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
+    return c.toDataURL("image/jpeg", 0.86);
+  }
+
   // ------------------------------------------------------------ .pptx
   async function renderPptx(model, PptxGenJS) {
     const pptx = new PptxGenJS();
@@ -703,6 +877,23 @@ Reply with ONLY JSON: {"words": [{"answer": "...", "clue": "..."}]}`;
           sl.addText(runs, {
             x: it.x, y: it.y, w: it.w, h: it.h, align: it.align, valign: it.valign, margin: [3, 3, 1.5, 1.5],
             lineSpacingMultiple: it.spacing, fit: "none", wrap: it.wrap, charSpacing: it.spc ? it.spc / 100 : undefined,
+          });
+        } else if (it.k === "img") {
+          try { sl.addImage({ data: await coverJpeg(it), x: it.x, y: it.y, w: it.w, h: it.h }); } catch (e) { /* rasm yuklanmasa — o'tkazib yuboriladi */ }
+        } else if (it.k === "chart") {
+          const pie = it.kind === "pie", line = it.kind === "line";
+          const type = pie ? pptx.ChartType.doughnut : line ? pptx.ChartType.line : pptx.ChartType.bar;
+          sl.addChart(type, [{ name: it.series || it.unit || "", labels: it.labels, values: it.values }], {
+            x: it.x, y: it.y, w: it.w, h: it.h, barDir: "col", barGapWidthPct: 60,
+            chartColors: pie ? it.colors.slice(0, it.labels.length) : [it.colors[0]],
+            showValue: !pie, showPercent: pie, showLegend: pie, legendPos: "r", legendFontSize: 14, legendColor: it.text, legendFontFace: it.font,
+            dataLabelColor: it.text, dataLabelFontSize: 13, dataLabelFontFace: it.font, dataLabelFontBold: true,
+            dataLabelPosition: pie ? "bestFit" : line ? "t" : "outEnd", dataLabelFormatCode: pie ? "0%" : "# ##0.##",
+            catAxisLabelColor: it.text, catAxisLabelFontSize: 13, catAxisLabelFontFace: it.font,
+            valAxisLabelColor: it.muted, valAxisLabelFontSize: 11, valAxisLabelFontFace: it.font,
+            valGridLine: { color: it.grid, size: 0.75 }, catGridLine: { style: "none" }, holeSize: 55,
+            lineSize: 3, lineDataSymbol: "circle", lineDataSymbolSize: 9,
+            showValAxisTitle: !!it.unit && !pie, valAxisTitle: it.unit || "", valAxisTitleColor: it.muted, valAxisTitleFontSize: 12,
           });
         } else if (it.k === "table") {
           const rows = it.cells.map((row) => row.map((c) => ({
@@ -779,6 +970,23 @@ Reply with ONLY JSON: {"words": [{"answer": "...", "clue": "..."}]}`;
             }
             el.appendChild(para);
           });
+        } else if (it.k === "img") {
+          el.style.height = inY(it.h);
+          el.style.backgroundImage = `url("${it.src}")`;
+          el.style.backgroundSize = "cover";
+          el.style.backgroundPosition = "center";
+        } else if (it.k === "chart") {
+          el.style.height = inY(it.h);
+          const cv = document.createElement("canvas");
+          const S = 72;   // 960 piksel kenglik
+          cv.width = Math.round(it.w * S * 1.5);
+          cv.height = Math.round(it.h * S * 1.5);
+          cv.style.width = "100%";
+          cv.style.height = "100%";
+          const ctx = cv.getContext("2d");
+          ctx.translate(-it.x * S * 1.5, -it.y * S * 1.5);
+          drawChart(ctx, it, S * 1.5);
+          el.appendChild(cv);
         } else if (it.k === "table") {
           const tb = document.createElement("table");
           tb.className = "pv-table";
@@ -819,7 +1027,7 @@ Reply with ONLY JSON: {"words": [{"answer": "...", "clue": "..."}]}`;
 
   // ------------------------------------------------------------ Claude uchun so'rov
   const LANG_NAMES = { uz: "Uzbek (modern Latin alphabet)", ru: "Russian", en: "English" };
-  const TYPES = ["bullets", "cards", "table", "comparison", "stats", "timeline", "quote"];
+  const TYPES = ["bullets", "cards", "table", "comparison", "stats", "timeline", "quote", "chart"];
 
   // Ikkala usul uchun umumiy qoidalar
   const RULES_LANGUAGE = `LANGUAGE
@@ -832,13 +1040,22 @@ Reply with ONLY JSON: {"words": [{"answer": "...", "clue": "..."}]}`;
 - comparison: "left_title", "left_items" (3-5, each max 90 chars), "right_title", "right_items" (3-5).
 - stats: "stats": 3-4 objects {"value" max 10 chars like "7 mln", "−3,3%", "1991"; "label" max 80 chars}; "source".
 - timeline: "events": 4-6 objects {"date" max 16 chars, "text" max 90 chars}, chronological.
-- quote: "quote" max 200 chars, "author".`;
+- quote: "quote" max 200 chars, "author".
+- chart: "chart_type": "bar" (comparison of items), "line" (change over time — labels are years/periods) or "pie" (parts of a whole that add up to about 100); "labels": 3-8 short strings (max 22 chars); "values": plain numbers, same count as labels, no units inside; "unit": short unit like "%", "mln kishi", "mlrd $" (max 14 chars); "series": what is measured (max 40 chars); "note": one-sentence takeaway (max 140 chars); "source".`;
+  // rasm va grafik — uchala usul uchun umumiy
+  const RULES_VISUALS = (fromSource) => `VISUALS (required)
+- At least ONE "chart" slide in every presentation. ${fromSource
+    ? "Use figures from the source when it has them; if it has none, use well-known general figures about the topic, rounded, and set \"source\" to the words for \"approximate figures\" in the output language (Uzbek: \"taxminiy ma’lumotlar\")."
+    : "Use real figures you know; if exact values are uncertain, use rounded approximations and set \"source\" to the words for \"approximate figures\" in the output language (Uzbek: \"taxminiy ma’lumotlar\"). Never present a guess as exact."}
+- Pictures: "image_topic" = 2-4 ENGLISH words for a cover photo of the whole topic. Choose 2 or 3 "bullets" slides that benefit most from a photo and give each an "image": a short ENGLISH search query (2-5 concrete words) for a real photo on Wikimedia Commons, e.g. "Registan Samarkand", "solar panels field". No other slide gets "image".`;
   const outputSpec = (refs) => `OUTPUT
 Reply with ONLY one JSON object, no other text:
 {"title": "clean presentation title, max 90 chars",
+ "image_topic": "english words",
  "plan": ["5-8 outline items, max 60 chars each"],
- "slides": [{"type": "bullets", "title": "...", "bullets": ["..."], "example": "..."},
-            {"type": "table", "title": "...", "columns": ["..."], "rows": [["..."]], "note": "..."}],
+ "slides": [{"type": "bullets", "title": "...", "bullets": ["..."], "example": "...", "image": "english query"},
+            {"type": "table", "title": "...", "columns": ["..."], "rows": [["..."]], "note": "..."},
+            {"type": "chart", "title": "...", "chart_type": "bar", "labels": ["..."], "values": [12.5, 30], "unit": "%", "series": "...", "note": "...", "source": "..."}],
  "conclusion": ["4-5 sentences, max 150 chars each"],
  "references": [${refs}]}`;
 
@@ -863,6 +1080,8 @@ FACTS (very important)
 
 ${RULES_TYPES}
 
+${RULES_VISUALS(false)}
+
 STRUCTURE
 - Exactly ${n} slides in "slides", in a logical order that follows "plan".
 - Variety: at least one table, one cards, one comparison and one quote; a timeline if the topic has history; stats only with reliable figures; the rest bullets. Never two slides of the same non-bullets type in a row. Quote in the second half.
@@ -886,6 +1105,10 @@ ${outputSpec('"5-7 real sources"')}`;
           for (let r = 0; r < sl.c.length; r += sl.cols) rows.push(sl.c.slice(r, r + sl.cols).map((x) => (x == null ? "(merged)" : x)));
           return `  slot ${j + 1}: TABLE ${rows.length}x${sl.cols} — return ${rows.length} rows, each an array of ${sl.cols} cell strings ("" for merged). Original: ${q(rows)}`;
         }
+        if (sl.k === "chart") {
+          if (!sl.ser || !sl.ser.length) return `  slot ${j + 1}: CHART (unreadable) — return null`;
+          return `  slot ${j + 1}: CHART (${sl.t}) — return an object {"title": "short chart title", "categories": [exactly ${sl.cats.length} strings], "series": [exactly ${sl.ser.length} item(s) {"name": "...", "values": [exactly ${sl.cats.length || sl.ser[0].v.length} plain numbers]}]} with real figures for the new topic (rounded approximations if unsure). Original: ${q({ title: sl.title, categories: sl.cats, series: sl.ser.map((x) => ({ name: x.n, values: x.v })) })}`;
+        }
         const avg = Math.round(sl.p.reduce((a, t) => a + t.length, 0) / Math.max(1, sl.p.length));
         return `  slot ${j + 1}: ${KIND[sl.k] || "text"}, ${sl.p.length} line(s), ~${avg} chars per line. Original: ${q(sl.p)}`;
       });
@@ -908,7 +1131,7 @@ ${desc}
 ${RULES_LANGUAGE}
 
 RULES
-- Return exactly ${n} slides in plan order. For each slide, "slots" has one entry per slot of its design, in the same order: a text slot → array of strings (one per line); a table slot → array of rows.
+- Return exactly ${n} slides in plan order. For each slide, "slots" has one entry per slot of its design, in the same order: a text slot → array of strings (one per line); a table slot → array of rows; a chart slot → an object with new categories and numbers.
 - Text must fit the boxes: the same number of lines as the original (±1) and about the same length per line, never more than 20% longer. Titles stay short.
 - Write the same KIND of content as the original slot: a title → a slide title; a numbered list → a numbered list; a short label → a short label; a big number → a number with a short caption.
 - Slides that share a design get different content. Content slides together cover the new topic in a logical order without repeating each other.
@@ -953,6 +1176,8 @@ HOW TO USE THE SOURCE (very important)
 ${RULES_LANGUAGE}
 
 ${RULES_TYPES}
+
+${RULES_VISUALS(true)}
 
 STRUCTURE
 - Slides in "slides" follow the source's order and match "plan".
@@ -1022,6 +1247,8 @@ FACTS (very important)
 
 ${RULES_TYPES}
 
+${RULES_VISUALS(false)}
+
 STRUCTURE
 - Exactly ${n} slides in "slides", in the order of the sample's patterns, matching "plan".
 - Do NOT add title, plan, conclusion, references or thank-you slides to "slides" — they are added automatically.
@@ -1053,10 +1280,36 @@ ${outputSpec(p.has_references === false ? '"empty list"' : '"5-7 real sources"')
       title: s(data.title) || topic, plan: ls(data.plan), conclusion: ls(data.conclusion),
       references: ls(data.references), slides: [],
     };
+    if (s(data.image_topic)) out.image_topic = s(data.image_topic).slice(0, 90);
+    const num = (v) => {
+      if (typeof v === "number") return Number.isFinite(v) ? v : NaN;
+      const m = String(v == null ? "" : v).replace(/\s+/g, "").replace(/,(\d{1,2})$/, ".$1").replace(/[,\u00a0]/g, "").match(/-?\d+(\.\d+)?/);
+      return m ? Number(m[0]) : NaN;
+    };
+    let nImg = 0;
     for (const sd of list(data.slides)) {
       if (!sd || typeof sd !== "object") continue;
       if (!TYPES.includes(sd.type)) sd.type = "bullets";
       if (!s(sd.title) && sd.type !== "quote") continue;
+      if (sd.type === "chart") {
+        const labels = list(sd.labels).map((x) => clean(x, 26)).filter(Boolean);
+        const values = list(sd.values).map(num);
+        const n = Math.min(labels.length, values.length, 10);
+        const ok = n >= 2 && values.slice(0, n).every((v) => Number.isFinite(v)) && values.slice(0, n).some((v) => v !== 0);
+        if (ok) {
+          sd.labels = labels.slice(0, n);
+          sd.values = values.slice(0, n);
+          sd.chart_type = ["bar", "line", "pie"].includes(sd.chart_type) ? sd.chart_type : "bar";
+          if (sd.chart_type === "pie" && sd.values.some((v) => v < 0)) sd.chart_type = "bar";
+        } else {
+          // raqamlar yaroqsiz — oddiy matnli slayd
+          sd.type = "bullets";
+          sd.bullets = labels.map((l, i) => (Number.isFinite(values[i]) ? `${l} — ${values[i]}${sd.unit ? " " + s(sd.unit) : ""}` : l));
+          if (s(sd.note)) sd.bullets.push(s(sd.note));
+        }
+      }
+      if (sd.type === "bullets" && s(sd.image) && nImg < 3) { sd.image = s(sd.image).slice(0, 90); nImg++; }
+      else delete sd.image;
       out.slides.push(sd);
     }
     if (!out.slides.length) throw new Error("no_slides");
@@ -1073,7 +1326,7 @@ ${outputSpec(p.has_references === false ? '"empty list"' : '"5-7 real sources"')
   const api = {
     THEMES, LABELS, buildDeck, renderPptx, renderPreview, buildPrompt, buildTextPrompt, normalize, safeFilename,
     makeTheme, buildSampleAnalysisPrompt, buildSamplePrompt, normalizeProfile,
-    layoutCrossword, buildCrosswordPrompt, normalizeCrossword, tokens, buildExactPrompt,
+    layoutCrossword, buildCrosswordPrompt, normalizeCrossword, tokens, buildExactPrompt, drawChart,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Deck = api;

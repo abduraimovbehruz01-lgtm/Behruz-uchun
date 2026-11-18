@@ -404,9 +404,38 @@ const form = () => $("form");
 const val = (name) => (document.querySelector(`input[name="${name}"]:checked`) || {}).value;
 const opts = () => {
   const theme = val("theme");
-  return { author: $("author").value, subject: $("subject").value, theme, lang: state.lang,
+  return { author: $("author").value, subject: $("subject").value, theme, lang: state.lang, images: state.imgs,
     customTheme: theme === "namuna" && state.sampleTheme ? state.sampleTheme : undefined };
 };
+
+// ------------------------------------------------------------ slayd rasmlari (server tanlaydi, ilova yuklab oladi)
+state.imgs = {};
+const imgJobs = new Map();
+const imageUrls = (d) => {
+  const out = [];
+  if (d && d.cover_image && d.cover_image.u) out.push(d.cover_image.u);
+  for (const sd of (d && d.slides) || []) if (sd && sd.img && sd.img.u) out.push(sd.img.u);
+  return out;
+};
+function loadImages() {
+  const urls = imageUrls(state.data).filter((u) => !state.imgs[u] && !imgJobs.has(u));
+  if (!urls.length) return;
+  Promise.all(urls.map((u) => {
+    const job = fetch(u).then((r) => { if (!r.ok) throw new Error("img"); return r.blob(); })
+      .then((b) => new Promise((resolve, reject) => {
+        const src = URL.createObjectURL(b);
+        const im = new Image();
+        im.onload = () => resolve({ src, iw: im.naturalWidth, ih: im.naturalHeight });
+        im.onerror = reject;
+        im.src = src;
+      }))
+      .then((v) => { state.imgs[u] = v; })
+      .catch(() => { /* rasm kelmasa — slayd rasmsiz chiziladi */ });
+    imgJobs.set(u, job);
+    return job;
+  })).then(() => render());
+}
+const imagesReady = () => Promise.all(imageUrls(state.data).map((u) => imgJobs.get(u)).filter(Boolean));
 const themeName = () => (val("theme") === "namuna" && state.sampleTheme ? "Namuna ranglari" : (Deck.THEMES[val("theme")] || Deck.THEMES.klassik).name);
 
 // Namuna ranglaridan qo'shimcha "Namuna" dizayni
@@ -545,6 +574,7 @@ function render() {
     $("cwBtn").hidden = false;
   }
   if (ex) return renderExact();
+  loadImages();
   state.model = Deck.buildDeck(state.data, opts());
   $("resTitle").textContent = state.model.title;
   const pill = $("resPill");
@@ -972,6 +1002,10 @@ async function download(onlyCw) {
   if (state.busy) return;
   if (!onlyCw && state.data && state.data.exact) return sendExact();
   const fmt = val("fmt") || "pptx";
+  if (imageUrls(state.data).some((u) => !state.imgs[u])) {
+    setStatus("Rasmlar yuklanmoqda…", "busy", 15);
+    await Promise.race([imagesReady(), new Promise((r) => setTimeout(r, 15000))]);
+  }
   const o = opts();
   render();
   const model = onlyCw ? Deck.buildDeck(state.data, Object.assign({}, o, { only: "crossword" })) : state.model;

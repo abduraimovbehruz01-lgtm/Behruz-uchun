@@ -1027,6 +1027,7 @@ route("POST", "/api/generate", async (req) => {
       if (profile.has_thanks === false) skip.push("thanks");
       if (skip.length) data.skip = skip;
     }
+    try { await attachImages(data, topic || data.title); } catch (e) { log("rasm tanlash xato:", e.message); }
     }
   } catch (e) {
     await ref.update({ credits: FV.increment(cost), used: FV.increment(-1) });   // xato bo'lsa jeton qaytariladi
@@ -1418,8 +1419,65 @@ function serveStatic(req, res, pathname) {
   res.end(item.buf);
 }
 
+// Wikimedia rasmlari ilovaga shu server orqali beriladi (Telegram ichida boshqa saytdan rasm olish cheklanishi mumkin)
+const imgProxyCache = new Map();
+const IMG_HOSTS = new Set(["upload.wikimedia.org", (() => { try { return new URL(IMG_API).host; } catch (e) { return ""; } })()]);
+async function proxyImage(req, res, url) {
+  let target;
+  try { target = new URL(url.searchParams.get("u") || ""); } catch (e) { res.writeHead(400); return res.end(); }
+  if (!IMG_HOSTS.has(target.host) || !/^https?:$/.test(target.protocol)) { res.writeHead(403); return res.end(); }
+  const key = target.href;
+  let hit = imgProxyCache.get(key);
+  if (!hit) {
+    try {
+      const r = await fetch(target.href, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(15000) });
+      const ct = r.headers.get("content-type") || "";
+      if (!r.ok || !/^image\/(jpeg|png|webp|gif)/.test(ct)) throw new Error("http " + r.status + " " + ct);
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length > 8 * 1024 * 1024) throw new Error("too big");
+      hit = { buf, ct };
+      cachePut(imgProxyCache, key, hit, 40);
+    } catch (e) {
+      log("rasm olinmadi:", target.pathname.slice(-60), e.message);
+      res.writeHead(502); return res.end();
+    }
+  }
+  res.writeHead(200, { "Content-Type": hit.ct, "Content-Length": hit.buf.length, "Cache-Control": "public, max-age=604800, immutable" });
+  res.end(hit.buf);
+}
+
+// Mavzu/matn usuli: muqova va 2-3 slayd uchun rasm tanlanadi (manzil saqlanadi, rasmni ilova yuklaydi)
+async function attachImages(data, topic) {
+  const COVER_AR = (13.333 - 7.75) / 7.5, SLIDE_AR = 4.55 / 4.97;
+  const jobs = [{ k: "cover", q: data.image_topic || topic, ar: COVER_AR }];
+  data.slides.forEach((sd, i) => { if (sd.image) jobs.push({ k: i, q: sd.image, ar: SLIDE_AR }); });
+  for (let i = 0; i < data.slides.length && jobs.length < 3; i++) {
+    const sd = data.slides[i];
+    if (sd.type === "bullets" && !sd.image) { sd.image = data.image_topic || topic; jobs.push({ k: i, q: sd.image, ar: SLIDE_AR }); }
+  }
+  const used = new Set();
+  const lists = await Promise.all(jobs.map(async (j) => {
+    for (const q of [...new Set([j.q, data.image_topic, topic].filter(Boolean))]) {
+      const l = await commons(q);
+      if (l.length) return l;
+    }
+    return [];
+  }));
+  jobs.forEach((j, n) => {
+    const fit = (c) => Math.abs(Math.log((c.w / c.h) / j.ar));
+    const cands = lists[n].filter((c) => !used.has(c.url)).slice(0, 4).sort((a, b) => fit(a) - fit(b));
+    const c = cands[0];
+    if (!c) return;
+    used.add(c.url);
+    const ref = { u: "/api/img?u=" + encodeURIComponent(c.url), w: c.w, h: c.h };
+    if (j.k === "cover") data.cover_image = ref;
+    else data.slides[j.k].img = ref;
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
+  if (url.pathname === "/api/img" && req.method === "GET") return proxyImage(req, res, url);
   if (!url.pathname.startsWith("/api/")) return serveStatic(req, res, url.pathname);
   const fn = routes[req.method + " " + url.pathname];
   if (!fn) return send(res, 404, { error: "Topilmadi", code: "not_found" });
