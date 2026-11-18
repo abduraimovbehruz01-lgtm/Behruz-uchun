@@ -363,7 +363,7 @@ function extractJson(text) {
   throw err;
 }
 
-async function callModel(model, prompt, withThinking) {
+async function callModel(model, prompt, withThinking, signal) {
   const gen = { responseMimeType: "application/json", maxOutputTokens: 30000 };
   // Tezlik uchun: Flash modellarda "minimal" fikrlash, boshqalarida "low". Model qo'llamasa — 400 → fikrlashsiz qayta.
   if (withThinking && /^gemini-([3-9]|flash)/.test(model)) gen.thinkingConfig = { thinkingLevel: /flash/.test(model) ? "minimal" : "low" };
@@ -372,7 +372,7 @@ async function callModel(model, prompt, withThinking) {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY },
     body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: gen }),
-    signal: AbortSignal.timeout(170000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(150000)]) : AbortSignal.timeout(150000),
   });
   const txt = await r.text();
   if (r.status === 400 && /API key not valid|API_KEY_INVALID/i.test(txt))
@@ -384,7 +384,7 @@ async function callModel(model, prompt, withThinking) {
   }
   if (r.status === 400 && /location is not supported/i.test(txt))
     throw new HttpError(500, "Gemini bu server joylashgan mamlakatda ishlamaydi. Admin serverni boshqa hududga ko‘chirishi kerak.", "ai_key");
-  if (r.status === 400 && gen.thinkingConfig) return callModel(model, prompt, false);
+  if (r.status === 400 && gen.thinkingConfig) return callModel(model, prompt, false, signal);
   if (!r.ok) {
     const err = new Error(`${model} ${r.status}: ${txt.slice(0, 200).replace(/\s+/g, " ")}`);
     err.status = r.status;
@@ -403,34 +403,66 @@ async function callModel(model, prompt, withThinking) {
   return text;
 }
 
-// Modellarni navbat bilan sinaymiz: biri band (429) yoki topilmasa (404) — keyingisi
-// Oxirgi ishlagan model birinchi sinaladi; topilmagan (404) modellar 6 soat chetlab o'tiladi.
-// Google "band" (503/429) desa — hamma modellarni yana 2 marta, oraliq bilan sinaymiz.
-let lastGoodModel = null;
+// Tezlik va ishonchlilik: modellar "poyga" usulida so'raladi.
+// Birinchi model javob bermay turgan bo'lsa (Google yuklangan paytda 503 javobi 30–60 soniyada keladi),
+// GEMINI_HEDGE_MS dan keyin keyingi model ham parallel so'raladi (bir vaqtda ko'pi bilan 3 ta). Birinchi to'g'ri javob olinadi,
+// qolganlari bekor qilinadi. Biri band (503/429) desa — darhol keyingisi. Topilmagan (404) modellar 6 soat chetlab o'tiladi.
+const HEDGE_MS = Math.max(1000, Number(process.env.GEMINI_HEDGE_MS) || 20000);
+let lastGood = null;   // { model, ms }
 const deadModels = new Map();
+function raceModels(order, prompt) {
+  return new Promise((resolve) => {
+    let idx = 0, running = 0, done = false, busy = false, timer = null;
+    const ctrls = new Set();
+    const finish = (r) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      ctrls.forEach((c) => c.abort());
+      resolve(r);
+    };
+    const launch = () => {
+      clearTimeout(timer);
+      if (done) return;
+      if (idx >= order.length) { if (!running) finish({ ok: false, busy }); return; }
+      if (running >= 3) return;
+      const model = order[idx++];
+      const ctrl = new AbortController();
+      const t0 = Date.now();
+      running++;
+      ctrls.add(ctrl);
+      callModel(model, prompt, true, ctrl.signal)
+        .then((txt) => {
+          const out = extractJson(txt);
+          lastGood = { model, ms: Date.now() - t0 };
+          log("gemini ok:", model, Math.round((Date.now() - t0) / 1000) + "s");
+          finish({ ok: true, out });
+        })
+        .catch((e) => {
+          if (done) return;
+          if (e instanceof HttpError) return finish({ ok: false, fatal: e });
+          if (e.status === 404) deadModels.set(model, Date.now() + 6 * 3600000);
+          if (e.status === 503 || e.status === 429 || e.status === 500 || e.name === "TimeoutError") busy = true;
+          log("gemini xato:", e.message);
+        })
+        .finally(() => { running--; ctrls.delete(ctrl); if (!done) launch(); });
+      timer = setTimeout(launch, HEDGE_MS);
+    };
+    launch();
+  });
+}
 async function askGemini(prompt) {
   if (!GEMINI_KEY) throw new HttpError(500, "Server hali to‘liq sozlanmagan (GEMINI_API_KEY yo‘q).", "ai_key");
-  const order = lastGoodModel ? [lastGoodModel, ...MODELS.filter((m) => m !== lastGoodModel)] : MODELS.slice();
-  for (let round = 0; round < 3; round++) {
-    if (round) await new Promise((r) => setTimeout(r, 5000 * round));
-    let tried = 0;
-    let busy = false;
-    for (const model of order) {
-      if ((deadModels.get(model) || 0) > Date.now()) continue;
-      tried++;
-      try {
-        const out = extractJson(await callModel(model, prompt, true));
-        lastGoodModel = model;
-        log("gemini ok:", model, round ? `(${round + 1}-aylana)` : "");
-        return out;
-      } catch (e) {
-        if (e instanceof HttpError) throw e;
-        if (e.status === 404) deadModels.set(model, Date.now() + 6 * 3600000);
-        if (e.status === 503 || e.status === 429 || e.status === 500) busy = true;
-        log("gemini xato:", e.message);
-      }
-    }
-    if (!tried || !busy) break;   // band bo'lmasa (masalan, javob buzuq) — qayta aylanish foydasiz
+  for (let round = 0; round < 2; round++) {
+    if (round) await new Promise((r) => setTimeout(r, 4000));
+    // oxirgi tez ishlagan model birinchi; sekin ishlagani (1 daqiqadan ko'p) oddiy navbatda qoladi
+    const first = lastGood && lastGood.ms < 60000 ? lastGood.model : null;
+    let order = (first ? [first, ...MODELS.filter((m) => m !== first)] : MODELS.slice()).filter((m) => (deadModels.get(m) || 0) <= Date.now());
+    if (!order.length) order = MODELS.slice();
+    const r = await raceModels(order, prompt);
+    if (r.ok) return r.out;
+    if (r.fatal) throw r.fatal;
+    if (!r.busy) break;   // band bo'lmasa (masalan, javob buzuq) — qayta aylanish foydasiz
   }
   throw new HttpError(503, "AI hozir juda band (Google serverlari yuklangan). 1–2 daqiqadan keyin qayta urinib ko‘ring.", "ai_busy");
 }
