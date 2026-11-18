@@ -449,6 +449,8 @@ function initMain() {
   $("subject").addEventListener("input", rerender);
   themesBox.addEventListener("change", () => { render(); persist(); });
   $("fmtSeg").addEventListener("change", () => { try { localStorage.setItem(STORE + ":fmt", val("fmt")); } catch (e) { /* */ } });
+  $("cwSeg").addEventListener("change", () => { try { localStorage.setItem(STORE + ":cw", val("cw")); } catch (e) { /* */ } });
+  try { if (localStorage.getItem(STORE + ":cw") === "1") document.querySelector('input[name="cw"][value="1"]').checked = true; } catch (e) { /* */ }
   try {
     const f = localStorage.getItem(STORE + ":fmt");
     const el = f && document.querySelector(`input[name="fmt"][value="${f}"]`);
@@ -527,7 +529,8 @@ function renderExact() {
   pill.className = "pill ready";
   $("resMeta").textContent = `${d.outline.length} ta slayd · dizayn namunadagidek`;
   $("how").hidden = true;
-  $("cwBtn").hidden = $("cwDlBtn").hidden = true;
+  $("cwBtn").hidden = true;
+  $("cwDlBtn").hidden = !(d.crossword && d.crossword.words);
   document.querySelectorAll('#fmtSeg input[name="fmt"]').forEach((r) => { r.parentElement.hidden = r.value !== "pptx"; });
   document.querySelector('#fmtSeg input[value="pptx"]').checked = true;
   $("preview").innerHTML = `<p class="ex-note">🎯 Bu taqdimot namunangizning o‘zidan yasaldi: fon, shrift, shakllar va joylashuv namunadagidek, matn va rasmlar — yangi mavzu bo‘yicha. To‘liq ko‘rinishi — PowerPoint faylda.</p>`
@@ -665,6 +668,7 @@ async function onGenerate(ev) {
 
   const n = Number(val("n"));
   const lang = val("lang");
+  const wantCw = val("cw") === "1";
   state.busy = true;
   $("goBtn").disabled = true;
   $("preview").classList.add("dim");
@@ -673,14 +677,14 @@ async function onGenerate(ev) {
     const s = (Date.now() - started) / 1000;
     const ex = mode === "sample" && state.me.sample && state.me.sample.exact;
     const msg = s < 8 ? (mode === "text" ? "Matningiz o‘qilmoqda…" : mode === "sample" ? "Namuna uslubi o‘rganilmoqda…" : "Mavzu o‘rganilmoqda…")
-      : s < 45 ? (mode === "text" ? "Matn slaydlarga bo‘linmoqda…" : ex && s > 30 ? "Mavzuga mos rasmlar qo‘yilmoqda…" : "Slaydlar matni yozilmoqda…")
+      : s < 45 ? (mode === "text" ? "Matn slaydlarga bo‘linmoqda…" : ex && s > 30 ? "Mavzuga mos rasmlar qo‘yilmoqda…" : wantCw ? "Slaydlar matni va krossvord yozilmoqda…" : "Slaydlar matni yozilmoqda…")
       : s < 90 ? (ex ? "Namuna faylida matn va rasmlar almashtirilmoqda…" : "Deyarli tayyor…") : "Biroz ko‘proq vaqt ketyapti, kuting…";
     setStatus(`${msg} ${Math.round(s)} soniya. Sahifani yopmang.`, "busy", 96 * (1 - Math.exp(-s / 35)));
   };
   tick();
   const timer = setInterval(tick, 1000);
   try {
-    const r = await api("/api/generate", { body: { mode, topic, source, subject: $("subject").value.trim(), author: $("author").value.trim(), n, lang } });
+    const r = await api("/api/generate", { body: { mode, topic, source, subject: $("subject").value.trim(), author: $("author").value.trim(), n, lang, crossword: wantCw } });
     state.data = r.data;
     state.deckId = r.id;
     state.lang = lang;
@@ -690,12 +694,18 @@ async function onGenerate(ev) {
     render();
     persist();
     loadHistory();
+    const cwNote = r.crosswordError ? " Krossvordni tuzib bo‘lmadi — keyinroq «🧩 Krossvord tuzish»ni bosing." : "";
     if (r.data.exact) {
-      setStatus(r.sent && r.sent.ok ? `✓ Tayyor! PowerPoint fayl bot chatiga yuborildi — dizayn namunadagidek. Qolgan jetonlar: ${r.credits} ta.`
+      let extra = "";
+      if (r.data.crossword && r.sent && r.sent.ok) {
+        try { await sendCrosswordFile(); extra = " Krossvord alohida fayl bo‘lib yuborildi."; }
+        catch (e) { extra = " Krossvord faylini yuborib bo‘lmadi — «⬇ Faqat krossvord»ni bosing."; }
+      }
+      setStatus(r.sent && r.sent.ok ? `✓ Tayyor! PowerPoint fayl bot chatiga yuborildi — dizayn namunadagidek.${extra}${r.crosswordError ? " Krossvordni tuzib bo‘lmadi." : ""} Qolgan jetonlar: ${r.credits} ta.`
         : `✓ Taqdimot tayyor, lekin chatga yuborilmadi: ${(r.sent && r.sent.error) || ""} «Yuklab olish»ni bosing.`, r.sent && r.sent.ok ? "ok" : "err", 100);
     } else {
       if (mode === "sample" && state.sampleTheme && $("theme-namuna")) { $("theme-namuna").checked = true; render(); persist(); }
-      setStatus(`✓ Tayyor! Fayl turini tanlab, «Yuklab olish»ni bosing. Qolgan jetonlar: ${r.credits} ta.`, "ok", 100);
+      setStatus(`✓ Tayyor!${r.data.crossword ? " Krossvord ham qo‘shildi — oxirgi 3 ta slayd." : ""}${cwNote} Fayl turini tanlab, «Yuklab olish»ni bosing. Qolgan jetonlar: ${r.credits} ta.`, "ok", 100);
     }
     $("resTitle").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
@@ -765,6 +775,8 @@ function initModes() {
     const ex = mode === "sample" && state.me && state.me.sample && state.me.sample.exact;
     $("nField").hidden = mode === "sample" && !ex;
     $("themeField").hidden = !!ex;   // namunadek: dizayn namunaning o'zidan
+    $("cwHint").textContent = ex ? "Krossvord alohida PowerPoint fayl bo‘lib chatga keladi."
+      : "Taqdimot oxiriga 3 ta slayd qo‘shiladi: krossvord katagi, savollar va javoblar.";
     const wasShown = !$("nSame").hidden;
     $("nSame").hidden = !ex;
     if (ex) {
@@ -946,6 +958,14 @@ async function sendExact() {
     state.busy = false;
     $("dlBtn").disabled = false;
   }
+}
+
+// namunadek taqdimotga krossvord — alohida PowerPoint fayl
+async function sendCrosswordFile() {
+  const model = Deck.buildDeck(state.data, Object.assign({}, opts(), { only: "crossword" }));
+  await loadScript(PPTX_URL);
+  const blob = await Deck.renderPptx(model, window.PptxGenJS);
+  return deliver(blob, Deck.safeFilename(model.title));
 }
 
 async function download(onlyCw) {

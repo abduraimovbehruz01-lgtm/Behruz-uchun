@@ -995,6 +995,12 @@ route("POST", "/api/generate", async (req) => {
     if (mode === "sample") profile = d.sample && d.sample.profile;
     tx.update(ref, { credits: FV.increment(-cost), used: FV.increment(1) });
   });
+  // krossvord (ixtiyoriy): taqdimot bilan parallel tuziladi — kutish vaqti qo'shilmaydi
+  const wantCw = body.crossword === true || body.crossword === 1 || body.crossword === "1";
+  const cwTopic = topic || clean((source.split("\n").find((l) => l.trim().length > 3) || ""), 150);
+  const cwJob = wantCw && cwTopic
+    ? askGemini(Deck.buildCrosswordPrompt(cwTopic, lang)).then((raw) => Deck.normalizeCrossword(raw)).catch((e) => { log("krossvord xato:", e.message); return null; })
+    : null;
   let data, exactDeck = null, exactBuf = null, nOut = n;
   try {
     if (exact) {
@@ -1031,6 +1037,12 @@ route("POST", "/api/generate", async (req) => {
     log(exact ? "namunadek yasash xato:" : "normalize xato:", e.message);
     throw new HttpError(500, "Taqdimot matnini olib bo‘lmadi. Qayta urinib ko‘ring — jetoningiz qaytarildi.");
   }
+  let cwError = null;
+  if (cwJob) {
+    const cw = await cwJob;
+    if (cw) data.crossword = cw;
+    else cwError = "Krossvordni tuzib bo‘lmadi.";
+  }
   const gen = db.collection("generations").doc();
   const batch = db.batch();
   batch.set(gen, { uid: u.uid, email: u.email, topic: topic || clean(data.title, 120), title: clean(data.title, 120), subject, lang, n: nOut, mode, cost,
@@ -1050,7 +1062,7 @@ route("POST", "/api/generate", async (req) => {
       sent = { ok: true, name };
     } catch (e) { sent = { ok: false, error: e.message }; }
   }
-  return { id: gen.id, data, credits: after.credits || 0, mode, sent };
+  return { id: gen.id, data, credits: after.credits || 0, mode, sent, crosswordError: cwError };
 });
 
 // namunadek taqdimotni qayta yuborish (tarixdan yoki «Yuklab olish»)
