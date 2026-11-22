@@ -326,6 +326,44 @@ def sentence_bounds(start, end, pauses, weights):
     return [(edges[i], edges[i + 1]) for i in range(k)]
 
 
+def bounds_from_anchors(start, end, anchors, weights, pauses=()):
+    """Gemini bergan gap boshlanish vaqtlaridan chegaralar yasaydi: noto'g'ri/yetishmayotganlarini harflar soniga
+    qarab to'ldiradi va yaqin pauzaga (0.6 s ichida) yopishtiradi. Qaytaradi: [(boshlanish, tugash), ...] yoki None."""
+    k = len(weights)
+    pts = {}
+    last = start - 1
+    for i in range(k):
+        t = anchors.get(i)
+        if t is not None and start - 0.5 <= t <= end - 0.3 and t > last + 0.3:
+            pts[i] = max(start, t)
+            last = pts[i]
+    if len(pts) < max(2, int(0.6 * k)):
+        return None
+    pts[0] = start
+    # yetishmayotganlarini qo'shnilari orasida harflar soniga qarab taqsimlash
+    known = sorted(pts)
+    full = [None] * k
+    for i in known:
+        full[i] = pts[i]
+    for a, b in zip(known, known[1:] + [k]):
+        tb = end if b == k else full[b]
+        if b - a > 1:
+            tot = float(sum(weights[a:b]))
+            acc = 0.0
+            for j in range(a + 1, b):
+                acc += weights[j - 1]
+                full[j] = full[a] + (tb - full[a]) * acc / tot
+    # pauzaga yopishtirish: gap pauza tugagan joydan boshlanadi
+    for i in range(1, k):
+        near = [pe for ps, pe in pauses if abs(pe - full[i]) <= 0.6 or ps <= full[i] <= pe]
+        if near:
+            cand = min(near, key=lambda pe: abs(pe - full[i]))
+            if full[i - 1] + 0.3 < cand < (full[i + 1] if i + 1 < k else end) - 0.3:
+                full[i] = cand
+    edges = full + [end]
+    return [(edges[i], edges[i + 1]) for i in range(k)]
+
+
 # ---------------- Sahnalarni rejalash ----------------
 
 def plan_shots(seg_durs, windows, duration, base_len=2.0):
@@ -462,7 +500,7 @@ async def final_mux(video_path, bg_wav, voice_path, v_start, v_end, total, out, 
     music: {"path": fayl, "start": soniya, "gain_db": dB}"""
     gain = max(-12.0, min(24.0, -15.0 - float(voice_db)))
     total = float(total)
-    bg_vol = 0.20 if music else 0.30
+    bg_vol = 0.15 if music else 0.30
 
     async def mux(extra):
         fc = (
@@ -479,7 +517,7 @@ async def final_mux(video_path, bg_wav, voice_path, v_start, v_end, total, out, 
                 f"[3:a]atrim=start={float(music.get('start', 0)):.2f},asetpts=PTS-STARTPTS,aresample=44100,"
                 f"aformat=sample_fmts=fltp:channel_layouts=stereo,volume={mg:.1f}dB,"
                 f"afade=t=in:st=0:d=1.5,afade=t=out:st={max(0.0, total - 2.5):.2f}:d=2.5,atrim=end={total:.3f}[mu0];"
-                "[mu0][sc2]sidechaincompress=threshold=0.03:ratio=5:attack=30:release=600[mua];"
+                "[mu0][sc2]sidechaincompress=threshold=0.06:ratio=2.5:attack=40:release=600[mua];"
                 "[vo][bga][mua]amix=inputs=3:duration=first:normalize=0,"
             )
         else:

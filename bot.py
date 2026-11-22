@@ -37,7 +37,7 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "").strip() or None
 OWNER_IDS = {int(x) for x in re.findall(r"\d+", os.environ.get("OWNER_IDS", ""))}
 WATERMARK = os.environ.get("WATERMARK", "BehruzFilm").strip()
 CTA_TEXT = os.environ.get("CTA_TEXT", "Kinoni ko‘rmoqchi bo‘lsangiz, profilimdagi botga {kod} kodini yuboring.")
-CTA_LINE1 = os.environ.get("CTA_LINE1", WATERMARK).strip()
+CTA_LINE1 = os.environ.get("CTA_LINE1", "@behruzfilmbot").strip()
 CAPTION_CTA = os.environ.get("CAPTION_CTA", "🔢 Kod: {kod} — kinoni ko‘rish uchun profilimdagi botga yuboring 🍿")
 BASE_TAGS = os.environ.get("BASE_HASHTAGS", "#kino #kinolar #film #filmlar")
 PUBLIC_URL = (os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
@@ -202,6 +202,26 @@ def cta_item(job):
     else:
         a, b = dur * 0.7, dur * 0.7 + 30
     return {"matn": CTA_TEXT.format(kod=job.code), "start": a, "end": b, "cta": True}
+
+
+async def write_checked(job):
+    """Matn yozdiradi; juda qisqa chiqsa (kerakligining 75% idan kam) — bir marta uzunroq qilib qayta yozdiradi."""
+    res = await gem.write_script(HTTP, job.name, job.duration, job.moments, job.variant, job.target_sec,
+                                 job.summary, job.characters)
+    words = sum(len((x.get("matn") or "").split()) for x in res.get("jumlalar") or [])
+    need = job.target_sec * 2.0
+    if words < 0.75 * need:
+        log.info("matn qisqa: %d so'z (kerak ~%d) — qayta yozdiriladi", words, need)
+        try:
+            res2 = await gem.write_script(HTTP, job.name, job.duration, job.moments, job.variant, job.target_sec,
+                                          job.summary, job.characters, too_short=words)
+            w2 = sum(len((x.get("matn") or "").split()) for x in res2.get("jumlalar") or [])
+            if w2 > words:
+                res, words = res2, w2
+        except Exception as e:
+            log.warning("qayta yozish bo'lmadi: %r", e)
+    log.info("matn: %d so'z, %d gap", words, len(res.get("jumlalar") or []))
+    return res
 
 
 def build_script(job, res):
@@ -387,8 +407,7 @@ async def analyse(job):
         if not job.code:
             await wait_for(lambda: job.code, 1800)
         job.target_sec = await get_len(job.chat_id)
-        res = await gem.write_script(HTTP, job.name, job.duration, job.moments, job.variant, job.target_sec,
-                                     job.summary, job.characters)
+        res = await write_checked(job)
         job.script = build_script(job, res)
         job.last = time.time()
         await st.set("✅ Matn tayyor! Pastda 👇", force=True)
@@ -415,8 +434,7 @@ async def regen(job):
     try:
         job.variant += 1
         job.target_sec = await get_len(job.chat_id)
-        res = await gem.write_script(HTTP, job.name, job.duration, job.moments, job.variant, job.target_sec,
-                                     job.summary, job.characters)
+        res = await write_checked(job)
         job.script = build_script(job, res)
         await st.delete()
         await send_script(job)
@@ -439,7 +457,21 @@ async def render(job):
         await video.voice_to_wav(job.voice, wav)
         vs, ve, pauses, level = video.speech_layout(wav)
         weights = [video.text_weight(s["matn"]) for s in job.script]
-        segs = video.sentence_bounds(vs, ve, pauses, weights)
+        segs = None
+        try:
+            await st.set("🎧 Ovozingizdagi har bir gap qayerda boshlanishi aniqlanmoqda…", force=True)
+            amp3 = os.path.join(job.dir, "voice_align.mp3")
+            await video.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", wav, "-c:a", "libmp3lame", "-b:a", "48k", amp3],
+                            timeout=300)
+            anchors = await gemini.align_voice(gem, HTTP, amp3, [s["matn"] for s in job.script])
+            segs = video.bounds_from_anchors(vs, ve, anchors, weights, pauses)
+            log.info("ovoz moslash: %d/%d gap topildi", len(anchors), len(weights))
+        except Exception as e:
+            log.warning("ovozni Gemini bilan moslab bo'lmadi: %r", e)
+        if not segs:
+            segs = video.sentence_bounds(vs, ve, pauses, weights)
+        log.info("gaplar (ovoz): %s", [round(a, 1) for a, _ in segs])
+        log.info("oraliqlar (kino): %s", [(round(s["start"]), round(s["end"])) for s in job.script])
         seg_durs = [b - a for a, b in segs]
         seg_durs[-1] += TAIL
         total = float(sum(seg_durs))

@@ -12,7 +12,7 @@ log = logging.getLogger("gemini")
 
 BASE = os.environ.get("GEMINI_BASE", "https://generativelanguage.googleapis.com").rstrip("/")
 DEFAULT_MODELS = "gemini-3.8-flash,gemini-flash-latest,gemini-3.5-flash,gemini-4-hydrogen,gemini-3.5-flash-lite,gemini-flash-lite-latest"
-SAFETY = [{"category": c, "threshold": "BLOCK_ONLY_HIGH"} for c in (
+SAFETY = [{"category": c, "threshold": "BLOCK_NONE"} for c in (
     "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
     "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT")]
 
@@ -126,7 +126,7 @@ def scene_prompt(name, k, n, start, length):
     )
 
 
-def script_prompt(name, duration, moments, variant=0, target_sec=120, summary="", characters=None):
+def script_prompt(name, duration, moments, variant=0, target_sec=120, summary="", characters=None, too_short=0):
     lines = "\n".join(
         f"{fmt_ts(m['t'])} — {m['voqea']}" + (" [KUCHLI]" if m.get("kuchli") else "") for m in moments
     )
@@ -135,6 +135,10 @@ def script_prompt(name, duration, moments, variant=0, target_sec=120, summary=""
     w_lo, w_hi = int(words * 0.9), int(words * 1.1)
     s_lo, s_hi = max(6, round(words / 14)), max(9, round(words / 10))
     extra = "\nWrite a NEW version that differs from earlier ones (another hook and wording)." if variant else ""
+    if too_short:
+        extra += (f"\nIMPORTANT: your previous attempt had only {too_short} words — far too short. This time write "
+                  f"AT LEAST {w_lo} words in {s_lo}–{s_hi} sentences: tell more of the story, more details and "
+                  "characters' motives.")
     return (
         "You write viral Uzbek Instagram Reels movie recaps («kino qisqacha mazmuni»).\n"
         f"Movie: «{name}», length {fmt_ts(duration)}.\n"
@@ -332,7 +336,45 @@ class Gemini:
         return {"moments": res, "summary": str(data.get("qisqacha") or "").strip(), "characters": chars}
 
     async def write_script(self, session, name, duration, moments, variant=0, target_sec=120, summary="",
-                           characters=None):
-        parts = [{"text": script_prompt(name, duration, moments, variant, target_sec, summary, characters)}]
+                           characters=None, too_short=0):
+        parts = [{"text": script_prompt(name, duration, moments, variant, target_sec, summary, characters, too_short)}]
         return await self.generate_json(session, parts, SCRIPT_SCHEMA, temperature=0.9 if variant else 0.75,
                                         timeout=300, prefer_strong=True)
+
+
+ALIGN_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "boshlanishlar": {
+            "type": "ARRAY",
+            "items": {"type": "OBJECT", "properties": {"n": {"type": "INTEGER"}, "t": {"type": "NUMBER"}},
+                      "required": ["n", "t"]},
+        }
+    },
+    "required": ["boshlanishlar"],
+}
+
+
+async def align_voice(gem, session, audio_path, sentences):
+    """Diktor yozuvida har bir gap necha soniyada boshlanishini Gemini'dan so'raydi. Qaytaradi: {raqam: soniya}."""
+    info = await gem.upload(session, audio_path, "audio/mpeg")
+    try:
+        numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(sentences))
+        prompt = ("This is a recording of a narrator reading the following numbered Uzbek sentences (the narrator may "
+                  "change a few words):\n" + numbered + "\n\nFor every sentence give \"n\" (its number) and \"t\" — "
+                  "the time in seconds from the start of the recording (0.1 s precision) when the narrator starts "
+                  "saying it. Listen carefully; times must increase. Skip a sentence only if it was not read at all.")
+        parts = [{"file_data": {"mime_type": info.get("mimeType") or "audio/mpeg", "file_uri": info["uri"]}},
+                 {"text": prompt}]
+        data = await gem.generate_json(session, parts, ALIGN_SCHEMA, temperature=0.0, timeout=120)
+    finally:
+        await gem.delete(session, info.get("name"))
+    res = {}
+    for it in data.get("boshlanishlar") or []:
+        try:
+            n, t = int(it.get("n")), float(it.get("t"))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= len(sentences) and t >= 0:
+            res[n - 1] = t
+    return res

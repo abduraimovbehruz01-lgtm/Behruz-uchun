@@ -19,7 +19,7 @@ log = logging.getLogger("music")
 LIB_FILE = "musiqalar.json"
 LIB_CAPTION = ("🎵 Musiqalar ro‘yxati — bot har videoga shu yerdan mos qo‘shiq tanlaydi.\n"
                "Bu xabarni o‘chirmang va pindan olmang. /musiqa — ro‘yxatni ko‘rish.")
-TARGET_RMS = float(os.environ.get("MUSIC_RMS_DB", "-28"))  # ovoz ostidagi musiqa balandligi (dBFS)
+TARGET_RMS = float(os.environ.get("MUSIC_RMS_DB", "-21"))  # ovoz ostidagi musiqa balandligi (dBFS)
 
 _cache: dict[int, dict] = {}      # chat_id -> {"lib": {...}, "msg_id": int | None}
 _locks: dict[int, asyncio.Lock] = {}
