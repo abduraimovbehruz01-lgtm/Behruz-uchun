@@ -11,6 +11,7 @@ import wave
 import numpy as np
 from aiogram.types import BufferedInputFile, InputMediaDocument
 
+import gemini
 import video
 
 log = logging.getLogger("music")
@@ -31,8 +32,9 @@ MOOD_SCHEMA = {
         "janr": {"type": "STRING"},
         "temp": {"type": "STRING"},
         "mos": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "eng_qiziq": {"type": "STRING"},
     },
-    "required": ["kayfiyat", "janr", "temp", "mos"],
+    "required": ["kayfiyat", "janr", "temp", "mos", "eng_qiziq"],
 }
 PICK_SCHEMA = {
     "type": "OBJECT",
@@ -48,7 +50,9 @@ MOOD_PROMPT = (
     "- \"janr\": music genre in 1–3 words;\n"
     "- \"temp\": sekin, o‘rta or tez;\n"
     "- \"mos\": 2–5 movie genres it fits (ujas, triller, drama, jangari, fantastika, komediya, romantik, detektiv, "
-    "sarguzasht, multfilm, tarixiy)."
+    "sarguzasht, multfilm, tarixiy);\n"
+    "- \"eng_qiziq\": the timestamp (M:SS from the start of this file) where the most memorable, catchy or powerful "
+    "part begins — the chorus, the drop or the climax."
 )
 
 
@@ -144,7 +148,7 @@ def _wav_stats(wav_path):
     hop = sr // 2
     n = len(x) // hop
     if n < 8:
-        return dur, -20.0, 0.0
+        return dur, -20.0, 0.0, 0.0
     r = np.sqrt((x[: n * hop].reshape(n, hop) ** 2).mean(axis=1) + 1e-12)
     rms_db = float(10 * np.log10(np.mean(r ** 2) + 1e-12))
     med = float(np.median(r))
@@ -152,18 +156,31 @@ def _wav_stats(wav_path):
     above = np.flatnonzero(smooth >= 0.6 * med)
     start = float(above[0] * 0.5) if len(above) else 0.0
     start = min(start, 30.0, dur * 0.3)
-    return dur, rms_db, round(start, 1)
+    # «eng qiziq joy»: 10 soniyalik eng baland (jo'shqin) bo'lak — odatda naqarot yoki drop —
+    # va uning boshlanish nuqtasi (ovoz keskin ko'tariladigan joy)
+    win = min(20, n)
+    e = r ** 2
+    csum = np.concatenate([[0.0], np.cumsum(e)])
+    means = (csum[win:] - csum[:-win]) / win
+    if len(means):
+        k = int(np.argmax(means))
+        seg = smooth[max(0, k - 6): k + win]
+        rise = np.flatnonzero(seg >= 0.8 * float(seg.max()))
+        best = (max(0, k - 6) + (int(rise[0]) if len(rise) else 6)) * 0.5
+    else:
+        best = start
+    return dur, rms_db, round(start, 1), round(float(best), 1)
 
 
 async def analyse(gem, http, path, workdir, key):
     """Qo'shiqning balandligini o'lchaydi va Gemini'dan kayfiyatini so'raydi (Gemini band bo'lsa ham qo'shiq saqlanadi)."""
     wav = os.path.join(workdir, f"m_{key}.wav")
     await video.voice_to_wav(path, wav)
-    dur, rms_db, start = _wav_stats(wav)
-    info = {"dur": round(dur, 1), "rms": round(rms_db, 1), "start": start}
+    dur, rms_db, start, best = _wav_stats(wav)
+    info = {"dur": round(dur, 1), "rms": round(rms_db, 1), "start": start, "best": best}
     clip = os.path.join(workdir, f"m_{key}.mp3")
     try:
-        await video.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", f"{start:.1f}", "-t", "75", "-i", wav,
+        await video.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-t", "360", "-i", wav,
                          "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "32k", clip], timeout=300)
         up = await gem.upload(http, clip, "audio/mpeg")
         try:
@@ -178,6 +195,9 @@ async def analyse(gem, http, path, workdir, key):
             "temp": str(data.get("temp") or "")[:12],
             "mos": [str(x)[:20] for x in (data.get("mos") or [])][:5],
         })
+        t = gemini.parse_ts(data.get("eng_qiziq"))
+        if t is not None and 3 <= t <= max(3.0, dur - 15):
+            info["best"] = round(float(t), 1)
     except Exception as e:
         log.warning("musiqa kayfiyati aniqlanmadi: %r", e)
     finally:
@@ -225,6 +245,31 @@ def next_other(lib, current_id):
         return None
     least = min(s.get("used", 0) for s in songs)
     return random.choice([s for s in songs if s.get("used", 0) == least])
+
+
+async def ensure_best(path, song, workdir):
+    """Oldin qo'shilgan qo'shiqlarda «eng qiziq joy» yo'q bo'lsa — ovoz balandligidan topadi."""
+    if song.get("best") is not None:
+        return False
+    wav = os.path.join(workdir, f"b_{song['id']}.wav")
+    try:
+        await video.voice_to_wav(path, wav)
+        _, _, _, best = _wav_stats(wav)
+        song["best"] = best
+        return True
+    finally:
+        try:
+            os.remove(wav)
+        except OSError:
+            pass
+
+
+def music_start(song):
+    """Musiqa qayerdan boshlansin: eng qiziq joydan 1 soniya oldin (bo'lmasa — jim kirishdan keyin)."""
+    best = song.get("best")
+    if best is not None:
+        return max(0.0, float(best) - 1.0)
+    return float(song.get("start", 0))
 
 
 async def fetch(bot, big, song, cache_dir):

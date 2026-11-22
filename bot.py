@@ -583,7 +583,9 @@ async def ensure_music(job):
             lib["last"] = song["id"]
             music.save_soon(bot, job.chat_id)
         path = await music.fetch(bot, BIG, song, MUSIC_DIR)
-        return {"path": path, "start": float(song.get("start", 0)), "name": song.get("name", "qo‘shiq"),
+        if await music.ensure_best(path, song, MUSIC_DIR):
+            music.save_soon(bot, job.chat_id)
+        return {"path": path, "start": music.music_start(song), "name": song.get("name", "qo‘shiq"),
                 "gain_db": music.TARGET_RMS - float(song.get("rms", -20))}
     except Exception as e:
         log.warning("musiqa qo'shilmadi: %r", e)
