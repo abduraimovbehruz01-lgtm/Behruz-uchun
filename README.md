@@ -16,7 +16,17 @@ Telegram bot: kinoni yuborasiz → bot 1 daqiqalik o‘zbekcha hikoya matnini yo
 
 Matnni o‘zgartirmoqchi bo‘lsangiz, yangi matnni yozib yuborasiz. «🔄 Boshqa matn» tugmasi boshqa variant yozdiradi. Yangi ovoz yuborsangiz, video qaytadan yig‘iladi.
 
-Buyruqlar: `/start`, `/bekor`, `/kod 125`.
+## Musiqa
+
+Botga qo‘shiq (mp3, m4a…) yuborsangiz, u saqlanadi: Gemini qo‘shiqni tinglab kayfiyatini (sirli, dramatik, quvnoq…) va qaysi janrdagi kinolarga mosligini yozib qo‘yadi. Har yangi videoda bot kino va matnga eng mos qo‘shiqni o‘zi tanlaydi (kam ishlatilganini afzal ko‘radi) va uni ovozingiz ostida past qilib qo‘shadi. Siz gapirganda musiqa pasayadi.
+Video ostida: «🎵 Boshqa musiqa», «🔇 Musiqasiz». `/musiqa` — ro‘yxat, o‘chirish, musiqani yoqish/o‘chirish.
+Qo‘shiqlar Telegram’da, ro‘yxat esa bot chatidagi qadalgan «musiqalar.json» faylida saqlanadi — server qayta ishga tushsa ham yo‘qolmaydi.
+
+## Instagram tavsifi
+
+Video bilan birga alohida xabarda tavsif keladi: kino nomisiz 2–3 gap, kod qatori va heshteglar.
+
+Buyruqlar: `/start`, `/musiqa`, `/kod 125`, `/bekor`.
 
 ## Sozlamalar (Render → Environment)
 

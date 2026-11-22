@@ -22,6 +22,7 @@ from aiogram.types import (BotCommand, CallbackQuery, FSInputFile, InlineKeyboar
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 import gemini
+import music
 import video
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -87,6 +88,9 @@ class Job:
     square: str | None = None
     timing: dict | None = None
     layout: str = "square"
+    music_id: str | None = None
+    music_name: str = ""
+    no_music: bool = False
     busy: str | None = None
     task: asyncio.Task | None = None
     last: float = field(default_factory=time.time)
@@ -94,6 +98,9 @@ class Job:
 
 
 JOBS: dict[int, Job] = {}
+PENDING_AUDIO: dict[int, dict] = {}   # «bu diktor ovozimi yoki musiqami?» deb so'ralgan fayllar
+MUSIC_SEM = asyncio.Semaphore(1)      # qo'shiqlar birma-bir tahlil qilinadi
+MUSIC_DIR = os.path.join(WORK_DIR, "music")
 GEMINI_STATUS = "tekshirilmagan"
 
 
@@ -464,13 +471,18 @@ async def finish(job, layout, st=None):
         if st is None:
             st = Status(job.chat_id, (await bot.send_message(job.chat_id, "🎞 Video tayyorlanmoqda…")).message_id)
         await st.set("🎞 Yakuniy video tayyorlanmoqda…", force=True)
+        mus = None
+        if not (job.square and os.path.exists(job.square)):
+            mus = await ensure_music(job)
         async with HEAVY:
             t0 = time.time()
             if not (job.square and os.path.exists(job.square)):
                 sq = os.path.join(job.dir, "kino_1x1.mp4")
                 tm = job.timing
-                await video.final_mux(job.concat, job.bg, job.voice, tm["vs"], tm["ve"], tm["total"], sq, tm["level"])
+                await video.final_mux(job.concat, job.bg, job.voice, tm["vs"], tm["ve"], tm["total"], sq, tm["level"],
+                                      music=mus)
                 job.square = sq
+                job.music_name = mus["name"] if mus else ""
             out, w, h = job.square, video.SIZE, video.SIZE
             if layout == "vertical":
                 out = os.path.join(job.dir, "kino_9x16.mp4")
@@ -480,12 +492,21 @@ async def finish(job, layout, st=None):
                 w, h = video.V_W, video.V_H
             log.info("yakuniy %s %.0fs", layout, time.time() - t0)
         job.layout = layout
-        note = "✅ Tayyor!\n🎙 Boshqa ovoz yuborsangiz — qayta yig‘aman.\n✏️ Matnni o‘zgartirish uchun yangi matnni yozing."
+        note = "✅ Tayyor!"
+        if job.music_name:
+            note += f"\n🎵 Musiqa: {esc(job.music_name)}"
+        note += "\n🎙 Boshqa ovoz yuborsangiz — qayta yig‘aman.\n✏️ Matnni o‘zgartirish uchun yangi matnni yozing."
         other = ("📐 9:16 (Reels)", "v916") if layout == "square" else ("⬛ 1:1 (namunadek)", "v11")
+        rows = [[other]]
+        if job.music_name:
+            rows.append([("🎵 Boshqa musiqa", "mnext"), ("🔇 Musiqasiz", "mnone")])
+        elif job.no_music:
+            rows.append([("🎵 Musiqa qo‘shish", "mback")])
+        rows.append([("🔄 Boshqa matn", "regen")])
         await bot.send_video(job.chat_id, FSInputFile(out, filename=os.path.basename(out)),
                              duration=int(round(job.timing["total"])), width=w, height=h,
                              supports_streaming=True, caption=note,
-                             reply_markup=kb([other], [("🔄 Boshqa matn", "regen")]), request_timeout=900)
+                             reply_markup=kb(*rows), request_timeout=900)
         await st.delete()
         cap = insta_caption(job)
         if cap:
@@ -502,6 +523,85 @@ async def finish(job, layout, st=None):
         job.last = time.time()
 
 
+# ---------------- Musiqa ----------------
+
+async def ensure_music(job):
+    """Videoga musiqa tanlaydi (kutubxona bo'sh yoki o'chirilgan bo'lsa — musiqasiz). Xato videoni to'xtatmaydi."""
+    if job.no_music:
+        return None
+    try:
+        lib = await music.load(bot, job.chat_id, WORK_DIR)
+        if lib.get("off") or not lib.get("songs"):
+            return None
+        song = music.find(lib, job.music_id) if job.music_id else None
+        if song is None:
+            text = " ".join(s["matn"] for s in (job.script or []))
+            song = await music.pick(gem, HTTP, lib, job.title or job.name or "", text)
+            if not song:
+                return None
+            job.music_id = song["id"]
+            song["used"] = int(song.get("used", 0)) + 1
+            lib["last"] = song["id"]
+            music.save_soon(bot, job.chat_id)
+        path = await music.fetch(bot, BIG, song, MUSIC_DIR)
+        return {"path": path, "start": float(song.get("start", 0)), "name": song.get("name", "qo‘shiq"),
+                "gain_db": music.TARGET_RMS - float(song.get("rms", -20))}
+    except Exception as e:
+        log.warning("musiqa qo'shilmadi: %r", e)
+        return None
+
+
+def audio_info(m: Message):
+    a = m.audio or m.document
+    name = ""
+    if m.audio:
+        name = " — ".join(x for x in ((m.audio.performer or "").strip(), (m.audio.title or "").strip()) if x)
+    fname = getattr(a, "file_name", None) or ""
+    if not name:
+        name = os.path.splitext(fname)[0] or "Qo‘shiq"
+    ext = os.path.splitext(fname)[1].lower()
+    if not ext or len(ext) > 6:
+        ext = ".mp3" if "mpeg" in (a.mime_type or "") else ".m4a"
+    return {"id": a.file_unique_id, "file_id": a.file_id, "name": name[:80], "size": a.file_size or 0,
+            "msg_id": m.message_id, "ext": ext}
+
+
+async def add_song(chat_id, a):
+    lib = await music.load(bot, chat_id, WORK_DIR)
+    if music.find(lib, a["id"]):
+        return await bot.send_message(chat_id, f"🎵 «{esc(a['name'])}» ro‘yxatda allaqachon bor.")
+    st = Status(chat_id, (await bot.send_message(chat_id, f"🎵 «{esc(a['name'])}» qabul qilindi. Navbatda…")).message_id)
+    async with MUSIC_SEM:
+        try:
+            await st.set(f"🎧 «{esc(a['name'])}» tinglanmoqda — kayfiyatini aniqlayapman…", force=True)
+            path = await music.fetch(bot, BIG, a, MUSIC_DIR)
+            info = await music.analyse(gem, HTTP, path, MUSIC_DIR, a["id"])
+            song = {**a, **info, "used": 0}
+            lib.setdefault("songs", []).append(song)
+            music.save_soon(bot, chat_id)
+            mood = music.describe(song) or "aniqlanmadi (Gemini band edi), lekin qo‘shiq saqlandi"
+            await st.set(f"✅ Saqlandi: <b>{esc(song['name'])}</b>\n🎭 {esc(mood)}\n"
+                         f"Jami: {len(lib['songs'])} ta qo‘shiq. /musiqa — ro‘yxat", force=True)
+        except Exception as e:
+            log.exception("qo'shiq xato")
+            await st.set(f"❌ «{esc(a['name'])}» saqlanmadi: {short_err(e)}", force=True)
+
+
+async def take_voice(job, a):
+    """Diktor ovozini yuklab olib, videoni yig'ishni boshlaydi."""
+    path = os.path.join(job.dir, f"voice_{int(time.time())}{a.get('ext') or '.ogg'}")
+    if (a.get("size") or 0) <= BOT_API_LIMIT:
+        await bot.download(a["file_id"], destination=path, timeout=300)
+    elif BIG is not None:
+        await BIG.download(a["msg_id"], path)
+    else:
+        raise RuntimeError("Ovoz fayli juda katta")
+    job.voice = path
+    job.last = time.time()
+    job.square = None
+    job.task = asyncio.create_task(render(job))
+
+
 # ---------------- Xabarlar ----------------
 
 WELCOME = (
@@ -510,7 +610,8 @@ WELCOME = (
     "2) Kino nomini va kodini yozasiz.\n"
     "3) Men hikoya matnini yozib beraman — uni o‘qib, <b>ovozli xabar</b> yuborasiz.\n"
     "4) Sahnalarni qirqib, ovozingiz bilan tayyor videoni yuboraman.\n\n"
-    "Buyruqlar: /bekor — joriy ishni to‘xtatish, /kod 125 — kodni o‘zgartirish."
+    "🎵 Qo‘shiq (mp3) yuborsangiz, saqlab qo‘yaman va har videoga mosini o‘zim tanlayman.\n\n"
+    "Buyruqlar: /musiqa — qo‘shiqlar ro‘yxati, /kod 125 — kodni o‘zgartirish, /bekor — joriy ishni to‘xtatish."
 )
 
 
@@ -562,8 +663,8 @@ async def on_file(m: Message):
     fname = getattr(media, "file_name", None) or ("kino.mp4" if m.video else "fayl")
     mime = (media.mime_type or "").lower()
     if m.document and not (mime.startswith("video/") or VIDEO_EXT.search(fname)):
-        if mime.startswith("audio/") or mime == "application/ogg":
-            return await on_voice(m)
+        if mime.startswith("audio/") or mime == "application/ogg" or re.search(r"\.(mp3|m4a|wav|ogg|aac|flac|opus)$", fname, re.I):
+            return await on_audio(m)
         return await m.answer("Bu video faylga o‘xshamaydi. Kinoni video yoki fayl qilib yuboring 🎬")
     size = media.file_size or 0
     if size > MAX_BYTES:
@@ -590,7 +691,7 @@ async def on_file(m: Message):
     await ask_next(job)
 
 
-@dp.message(F.voice | F.audio)
+@dp.message(F.voice)
 async def on_voice(m: Message):
     if not allowed(m.from_user.id):
         return
@@ -601,21 +702,49 @@ async def on_voice(m: Message):
         return await m.answer("⏳ Matn hali tayyor emas. Tayyor bo‘lgach, o‘shani o‘qib yuborasiz.")
     if job.busy:
         return await m.answer("⏳ Video yig‘ilyapti. Tugagach, yangi ovozni yuborishingiz mumkin.")
-    media = m.voice or m.audio or m.document
-    ext = ".ogg" if m.voice else (os.path.splitext(getattr(media, "file_name", "") or "")[1] or ".m4a")
-    path = os.path.join(job.dir, f"voice_{int(time.time())}{ext}")
+    a = {"file_id": m.voice.file_id, "size": m.voice.file_size or 0, "msg_id": m.message_id, "ext": ".ogg"}
     try:
-        if (media.file_size or 0) <= BOT_API_LIMIT:
-            await bot.download(media.file_id, destination=path, timeout=300)
-        elif BIG is not None:
-            await BIG.download(m.message_id, path)
-        else:
-            return await m.answer("Ovoz fayli juda katta.")
+        await take_voice(job, a)
     except Exception as e:
-        return await m.answer(f"❌ Ovozni yuklab bo‘lmadi: {short_err(e)}")
-    job.voice = path
-    job.last = time.time()
-    job.task = asyncio.create_task(render(job))
+        await m.answer(f"❌ Ovozni yuklab bo‘lmadi: {short_err(e)}")
+
+
+@dp.message(F.audio)
+async def on_audio(m: Message):
+    """Audio fayl: matn kutilayotgan bo'lsa — so'raymiz (diktor ovozimi yoki musiqami), aks holda musiqa."""
+    if not allowed(m.from_user.id):
+        return
+    a = audio_info(m)
+    job = JOBS.get(m.from_user.id)
+    if job and job.script and job.movie and not job.busy:
+        PENDING_AUDIO[m.from_user.id] = a
+        return await m.answer(f"«{esc(a['name'])}» — bu nima?",
+                              reply_markup=kb([("🎙 Diktor ovozi", "as_voice"), ("🎵 Musiqa (saqlash)", "as_music")]))
+    asyncio.create_task(add_song(m.chat.id, a))
+
+
+@dp.message(Command("musiqa"))
+async def cmd_music(m: Message):
+    if not allowed(m.from_user.id):
+        return
+    await show_music(m.chat.id)
+
+
+async def show_music(chat_id):
+    lib = await music.load(bot, chat_id, WORK_DIR)
+    songs = lib.get("songs") or []
+    if not songs:
+        return await bot.send_message(chat_id, "🎵 Hali qo‘shiq yo‘q.\nQo‘shiq (mp3) faylini shu yerga yuboring — "
+                                               "saqlab qo‘yaman va har videoga mosini o‘zim tanlayman.")
+    lines = [f"{i + 1}. <b>{esc(x['name'])}</b> — {esc(music.describe(x) or 'tavsif yo‘q')} "
+             f"({x.get('used', 0)} marta)" for i, x in enumerate(songs[:60])]
+    state = "🔇 o‘chirilgan" if lib.get("off") else "🔊 yoqilgan"
+    rows = [[(f"🗑 {i + 1}", f"mdel:{x['id']}") for i, x in enumerate(songs[j:j + 5], start=j)]
+            for j in range(0, min(len(songs), 60), 5)]
+    rows.append([("🔊 Musiqani yoqish" if lib.get("off") else "🔇 Musiqani o‘chirish", "mtoggle")])
+    text = (f"🎵 <b>Musiqalar</b> ({len(songs)} ta), musiqa {state}\n\n" + "\n".join(lines)
+            + "\n\n🗑 — o‘chirish. Yangi qo‘shiq qo‘shish uchun faylni yuboring.")
+    await bot.send_message(chat_id, text[:4000], reply_markup=kb(*rows))
 
 
 @dp.message(F.text & ~F.text.startswith("/"))
@@ -645,6 +774,65 @@ async def on_text(m: Message):
         job.script = remap_script(job, sentences)
         return await m.answer("✅ Matn yangilandi. Endi shu matnni o‘qib, ovozli xabar yuboring 🎙")
     await m.answer("⏳ Ishlayapman, biroz kuting…")
+
+
+@dp.callback_query(F.data.startswith("mdel:") | F.data.in_({"mtoggle", "as_music", "as_voice"}))
+async def on_music_button(c: CallbackQuery):
+    await c.answer()
+    uid, chat_id = c.from_user.id, c.message.chat.id if c.message else c.from_user.id
+    if not allowed(uid):
+        return
+    if c.data in ("as_music", "as_voice"):
+        a = PENDING_AUDIO.pop(uid, None)
+        if not a:
+            return await bot.send_message(chat_id, "Faylni qaytadan yuboring.")
+        if c.data == "as_music":
+            asyncio.create_task(add_song(chat_id, a))
+            return
+        job = JOBS.get(uid)
+        if not job or not job.script or job.busy:
+            return await bot.send_message(chat_id, "⏳ Hozir ovoz qabul qila olmayman, biroz kuting.")
+        try:
+            await take_voice(job, a)
+        except Exception as e:
+            await bot.send_message(chat_id, f"❌ Ovozni yuklab bo‘lmadi: {short_err(e)}")
+        return
+    lib = await music.load(bot, chat_id, WORK_DIR)
+    if c.data == "mtoggle":
+        lib["off"] = not lib.get("off")
+    else:
+        sid = c.data.split(":", 1)[1]
+        song = music.find(lib, sid)
+        if song:
+            lib["songs"].remove(song)
+            await bot.send_message(chat_id, f"🗑 O‘chirildi: {esc(song['name'])}")
+    music.save_soon(bot, chat_id, delay=0.5)
+    await show_music(chat_id)
+
+
+@dp.callback_query(F.data.in_({"mnext", "mnone", "mback"}))
+async def on_music_choice(c: CallbackQuery):
+    await c.answer()
+    job = JOBS.get(c.from_user.id)
+    if not job or not allowed(c.from_user.id) or not (job.concat and job.timing and os.path.exists(job.concat)):
+        return await bot.send_message(c.from_user.id, "Bu ish eskirgan. Kinoni qaytadan yuboring 🎬")
+    if job.busy or (job.task and not job.task.done()):
+        return await bot.send_message(job.chat_id, "⏳ Hozir ishlayapman, biroz kuting…")
+    if c.data == "mnone":
+        job.no_music = True
+    elif c.data == "mback":
+        job.no_music, job.music_id = False, None
+    else:
+        lib = await music.load(bot, job.chat_id, WORK_DIR)
+        song = music.next_other(lib, job.music_id)
+        if not song:
+            return await bot.send_message(job.chat_id, "Ro‘yxatda boshqa qo‘shiq yo‘q. Yangi qo‘shiq yuboring 🎵")
+        song["used"] = int(song.get("used", 0)) + 1
+        lib["last"] = song["id"]
+        music.save_soon(bot, job.chat_id)
+        job.no_music, job.music_id = False, song["id"]
+    job.square = None
+    job.task = asyncio.create_task(finish(job, job.layout))
 
 
 @dp.callback_query(F.data.in_({"regen", "retry", "v916", "v11"}))
@@ -726,6 +914,7 @@ async def on_startup():
             BotCommand(command="start", description="Yo‘riqnoma"),
             BotCommand(command="bekor", description="Joriy ishni to‘xtatish"),
             BotCommand(command="kod", description="Kino kodini o‘zgartirish"),
+            BotCommand(command="musiqa", description="Qo‘shiqlar ro‘yxati"),
         ])
     except Exception as e:
         log.warning("set_my_commands: %r", e)

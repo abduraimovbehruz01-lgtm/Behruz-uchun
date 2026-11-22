@@ -406,34 +406,49 @@ async def measure_lufs(path):
     return float(m[-1]) if m else None
 
 
-async def final_mux(video_path, bg_wav, voice_path, v_start, v_end, total, out, voice_db=-20.0, target=-14.0):
-    """Tayyor sahnalar (nusxalanadi, qayta kodlanmaydi) + sizning ovozingiz + kino ovozi
-    (past, siz gapirganda yanada pasayadi). Ovoz Instagram uchun me'yoriy balandlikka (≈ -14 LUFS) keltiriladi."""
+async def final_mux(video_path, bg_wav, voice_path, v_start, v_end, total, out, voice_db=-20.0, target=-14.0,
+                    music=None):
+    """Tayyor sahnalar (nusxalanadi, qayta kodlanmaydi) + sizning ovozingiz + kino ovozi + (bo'lsa) musiqa.
+    Kino ovozi va musiqa siz gapirganda pasayadi. Umumiy balandlik Instagram me'yoriga (≈ -14 LUFS) keltiriladi.
+    music: {"path": fayl, "start": soniya, "gain_db": dB}"""
     gain = max(-12.0, min(24.0, -15.0 - float(voice_db)))
+    total = float(total)
+    bg_vol = 0.20 if music else 0.30
 
     async def mux(extra):
         fc = (
             f"[2:a]atrim=start={v_start:.3f}:end={v_end:.3f},asetpts=PTS-STARTPTS,"
             "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,highpass=f=80,"
             f"volume={gain:.1f}dB,acompressor=threshold=0.08:ratio=3:attack=8:release=200:makeup=2,"
-            f"apad=whole_dur={total:.3f},asplit=2[vo][sc];"
-            "[1:a]aformat=sample_fmts=fltp:channel_layouts=stereo,volume=0.30[bg0];"
+            f"apad=whole_dur={total:.3f},asplit={3 if music else 2}[vo][sc]{'[sc2]' if music else ''};"
+            f"[1:a]aformat=sample_fmts=fltp:channel_layouts=stereo,volume={bg_vol}[bg0];"
             "[bg0][sc]sidechaincompress=threshold=0.02:ratio=10:attack=15:release=400[bga];"
-            "[vo][bga]amix=inputs=2:duration=first:normalize=0,"
-            f"volume={extra:.1f}dB,alimiter=limit=0.84:attack=5:release=60:level=false[a]"
         )
-        await run([
-            "ffmpeg", "-nostdin", "-v", "error", "-y", "-i", video_path, "-i", bg_wav, "-i", voice_path,
-            "-filter_complex", fc, "-map", "0:v:0", "-map", "[a]", "-t", f"{total:.3f}",
-            "-c:v", "copy", "-c:a", "aac", "-aac_coder", "fast", "-b:a", "160k", "-ar", "44100",
-            "-movflags", "+faststart", out,
-        ], timeout=1800)
+        if music:
+            mg = max(-30.0, min(20.0, float(music.get("gain_db", 0.0))))
+            fc += (
+                f"[3:a]atrim=start={float(music.get('start', 0)):.2f},asetpts=PTS-STARTPTS,aresample=44100,"
+                f"aformat=sample_fmts=fltp:channel_layouts=stereo,volume={mg:.1f}dB,"
+                f"afade=t=in:st=0:d=1.5,afade=t=out:st={max(0.0, total - 2.5):.2f}:d=2.5,atrim=end={total:.3f}[mu0];"
+                "[mu0][sc2]sidechaincompress=threshold=0.03:ratio=5:attack=30:release=600[mua];"
+                "[vo][bga][mua]amix=inputs=3:duration=first:normalize=0,"
+            )
+        else:
+            fc += "[vo][bga]amix=inputs=2:duration=first:normalize=0,"
+        fc += f"volume={extra:.1f}dB,alimiter=limit=0.84:attack=5:release=60:level=false[a]"
+        cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", video_path, "-i", bg_wav, "-i", voice_path]
+        if music:
+            cmd += ["-stream_loop", "-1", "-i", music["path"]]
+        cmd += ["-filter_complex", fc, "-map", "0:v:0", "-map", "[a]", "-t", f"{total:.3f}",
+                "-c:v", "copy", "-c:a", "aac", "-aac_coder", "fast", "-b:a", "160k", "-ar", "44100",
+                "-movflags", "+faststart", out]
+        await run(cmd, timeout=1800)
 
     await mux(0.0)
     lufs = await measure_lufs(out)
     if lufs is not None and abs(lufs - target) > 1.0:
         await mux(max(-10.0, min(12.0, target - lufs)))
-    return {"width": SIZE, "height": SIZE, "duration": float(total)}
+    return {"width": SIZE, "height": SIZE, "duration": total}
 
 
 async def make_vertical(square_mp4, out):
