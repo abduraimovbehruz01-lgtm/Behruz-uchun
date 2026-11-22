@@ -21,6 +21,7 @@ from aiogram.types import (BotCommand, CallbackQuery, FSInputFile, InlineKeyboar
                            InlineKeyboardMarkup, Message)
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
+import eleven
 import gemini
 import music
 import video
@@ -34,6 +35,7 @@ API_ID = os.environ.get("API_ID", "").strip()
 API_HASH = os.environ.get("API_HASH", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "").strip() or None
+ELEVEN_KEY = os.environ.get("ELEVEN_API_KEY", "").strip()
 OWNER_IDS = {int(x) for x in re.findall(r"\d+", os.environ.get("OWNER_IDS", ""))}
 WATERMARK = os.environ.get("WATERMARK", "BehruzFilm").strip()
 CTA_TEXT = os.environ.get("CTA_TEXT", "Kinoni ko‘rmoqchi bo‘lsangiz, profilimdagi botga {kod} kodini yuboring.")
@@ -42,7 +44,7 @@ CAPTION_CTA = os.environ.get("CAPTION_CTA", "🔢 Kod: {kod} — kinoni ko‘ris
 BASE_TAGS = os.environ.get("BASE_HASHTAGS", "#kino #kinolar #film #filmlar")
 PUBLIC_URL = (os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
 PORT = int(os.environ.get("PORT", "10000"))
-WORK_DIR = os.environ.get("WORK_DIR", "/tmp/kino")
+WORK_DIR = os.environ.get("WORK_DIR", "/var/data/kino")
 MAX_BYTES = int(float(os.environ.get("MAX_FILE_GB", "2")) * 1024 ** 3)
 DL_WORKERS = int(os.environ.get("DOWNLOAD_WORKERS", "6"))
 BOT_API_LIMIT = 20 * 1024 * 1024
@@ -90,6 +92,7 @@ class Job:
     tags: list = field(default_factory=list)
     voice: str | None = None
     voice_parts: list = field(default_factory=list)   # [(fayl, soniya)] — ovoz bir nechta xabarda kelsa
+    voice_anchors: dict | None = None                 # ElevenLabs bergan gap boshlanish vaqtlari
     voice_timer: asyncio.Task | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     concat: str | None = None
@@ -316,6 +319,38 @@ def kb(*rows):
                                                  for row in rows])
 
 
+async def remember_job(job):
+    """Kino ma'lumotini chatdagi qadalgan faylga yozib qo'yadi — server qayta ishga tushsa, «Davom ettirish» mumkin bo'lsin."""
+    try:
+        lib = await music.load(bot, job.chat_id, WORK_DIR)
+        lib["job"] = {"msg_id": job.msg_id, "file_id": job.file_id, "size": job.size, "file_name": job.file_name,
+                      "name": job.name, "code": job.code, "t": int(time.time())}
+        music.save_soon(bot, job.chat_id)
+    except Exception as e:
+        log.warning("ish ma'lumoti saqlanmadi: %r", e)
+
+
+async def resume_job(uid, chat_id):
+    """Saqlangan kino ma'lumotidan ishni qaytadan boshlaydi (kino Telegram'dan qayta yuklanadi)."""
+    lib = await music.load(bot, chat_id, WORK_DIR)
+    meta = lib.get("job") or {}
+    if not meta.get("msg_id"):
+        return await bot.send_message(chat_id, "Davom ettiradigan ish topilmadi. Kinoni qaytadan yuboring 🎬")
+    old = JOBS.pop(uid, None)
+    if old:
+        await drop_job(old)
+    d = os.path.join(WORK_DIR, f"{uid}_{int(time.time())}")
+    os.makedirs(d, exist_ok=True)
+    job = Job(uid=uid, chat_id=chat_id, dir=d, msg_id=meta["msg_id"], file_id=meta.get("file_id", ""),
+              size=int(meta.get("size") or 0), file_name=meta.get("file_name") or "kino.mp4",
+              name=meta.get("name"), code=meta.get("code"))
+    JOBS[uid] = job
+    sm = await bot.send_message(chat_id, f"🔁 Davom ettiryapman: kinoni qaytadan yuklab olyapman ({human_mb(job.size)})…")
+    job.status = Status(chat_id, sm.message_id)
+    job.task = asyncio.create_task(analyse(job))
+    await ask_next(job)
+
+
 async def drop_job(job):
     if job.task and not job.task.done():
         job.task.cancel()
@@ -403,6 +438,11 @@ async def analyse(job):
                 raise RuntimeError("Gemini kinodan yetarli voqea topmadi")
             moments.sort(key=lambda m: m["t"])
             job.moments, job.summary, job.characters = moments, " ".join(summaries), list(chars.values())
+            for cpath, *_ in job.chunks or []:
+                try:
+                    os.remove(cpath)  # diskni bo'shatish: lahzalar topildi, ovoz bo'laklari endi kerak emas
+                except OSError:
+                    pass
         await st.set("✍️ Hikoya matni yozilmoqda…", force=True)
         if not job.code:
             await wait_for(lambda: job.code, 1800)
@@ -426,7 +466,10 @@ async def send_script(job):
     text = (f"{title}🎙 <b>Shu matnni o‘qib, ovozli xabar yuboring:</b>\n\n{body}\n\n"
             "💡 <i>Har gapdan keyin bir lahza to‘xtab o‘qing — sahnalar ovozga aniq mos tushadi. "
             "Matnni o‘zgartirmoqchi bo‘lsangiz, o‘zgartirilgan matnni yozib yuboring.</i>")
-    await bot.send_message(job.chat_id, text, reply_markup=kb([("🔄 Boshqa matn", "regen")]))
+    rows = [[("🔄 Boshqa matn", "regen")]]
+    if ELEVEN_KEY:
+        rows.insert(0, [("🤖 ElevenLabs ovozida o‘qit", "tts")])
+    await bot.send_message(job.chat_id, text, reply_markup=kb(*rows))
 
 
 async def regen(job):
@@ -458,16 +501,21 @@ async def render(job):
         vs, ve, pauses, level = video.speech_layout(wav)
         weights = [video.text_weight(s["matn"]) for s in job.script]
         segs = None
-        try:
-            await st.set("🎧 Ovozingizdagi har bir gap qayerda boshlanishi aniqlanmoqda…", force=True)
-            amp3 = os.path.join(job.dir, "voice_align.mp3")
-            await video.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", wav, "-c:a", "libmp3lame", "-b:a", "48k", amp3],
-                            timeout=300)
-            anchors = await gemini.align_voice(gem, HTTP, amp3, [s["matn"] for s in job.script])
-            segs = video.bounds_from_anchors(vs, ve, anchors, weights, pauses)
-            log.info("ovoz moslash: %d/%d gap topildi", len(anchors), len(weights))
-        except Exception as e:
-            log.warning("ovozni Gemini bilan moslab bo'lmadi: %r", e)
+        if job.voice_anchors:
+            segs = video.bounds_from_anchors(vs, ve, job.voice_anchors, weights, pauses)
+            if segs:
+                log.info("ovoz moslash: ElevenLabs vaqtlari ishlatildi")
+        if not segs:
+            try:
+                await st.set("🎧 Ovozingizdagi har bir gap qayerda boshlanishi aniqlanmoqda…", force=True)
+                amp3 = os.path.join(job.dir, "voice_align.mp3")
+                await video.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", wav, "-c:a", "libmp3lame", "-b:a",
+                                 "48k", amp3], timeout=300)
+                anchors = await gemini.align_voice(gem, HTTP, amp3, [s["matn"] for s in job.script])
+                segs = video.bounds_from_anchors(vs, ve, anchors, weights, pauses)
+                log.info("ovoz moslash: %d/%d gap topildi", len(anchors), len(weights))
+            except Exception as e:
+                log.warning("ovozni Gemini bilan moslab bo'lmadi: %r", e)
         if not segs:
             segs = video.sentence_bounds(vs, ve, pauses, weights)
         log.info("gaplar (ovoz): %s", [round(a, 1) for a, _ in segs])
@@ -730,8 +778,39 @@ async def start_render(job):
     else:
         job.voice = await video.concat_voice(parts, os.path.join(job.dir, f"voice_all_{int(time.time())}.ogg"))
     job.square = None
+    job.voice_anchors = None
     job.busy = "render"  # darhol — ikkinchi ovoz kelsa, ikki marta yig'ilmasin
     job.task = asyncio.create_task(render(job))
+
+
+async def tts_job(job):
+    """ElevenLabs bilan matnni o'qitib, videoni yig'ishni boshlaydi."""
+    st = Status(job.chat_id, (await bot.send_message(job.chat_id, "🤖 ElevenLabs matnni o‘qiyapti…")).message_id)
+    try:
+        lib = await music.load(bot, job.chat_id, WORK_DIR)
+        vid = lib.get("ovoz") or eleven.VOICES[0][1]
+        sentences = [s["matn"] for s in job.script]
+        path = os.path.join(job.dir, f"eleven_{int(time.time())}.mp3")
+        alignment = await eleven.tts(HTTP, ELEVEN_KEY, vid, "\n\n".join(sentences), path)
+        anchors = eleven.sentence_starts(sentences, alignment)
+        dur = await video.audio_duration(path)
+        left = await eleven.credits_left(HTTP, ELEVEN_KEY)
+        log.info("elevenlabs: %s, %.0fs, gaplar %d/%d, kredit %s", eleven.voice_name(vid), dur, len(anchors),
+                 len(sentences), left)
+        await st.set(f"✅ Ovoz tayyor: {eleven.voice_name(vid)}, {fmt_sec(dur)}"
+                     + (f". ElevenLabs krediti qoldi: {left:,}".replace(",", " ") if left is not None else ""), force=True)
+        async with job.lock:
+            job.voice, job.voice_parts, job.voice_anchors = path, [], anchors or None
+            job.square = None
+            job.busy = "render"
+            job.task = asyncio.create_task(render(job))
+    except eleven.ElevenError as e:
+        job.busy = None
+        await st.set(f"❌ ElevenLabs: {esc(eleven.friendly(e))}", force=True)
+    except Exception as e:
+        job.busy = None
+        log.exception("tts xato")
+        await st.set(f"❌ Ovoz yaratilmadi: {short_err(e)}", force=True)
 
 
 # ---------------- Xabarlar ----------------
@@ -742,7 +821,8 @@ WELCOME = (
     "2) Kino nomini va kodini yozasiz.\n"
     "3) Men hikoya matnini yozib beraman — uni o‘qib, <b>ovozli xabar</b> yuborasiz.\n"
     "4) Sahnalarni qirqib, ovozingiz bilan tayyor videoni yuboraman.\n\n"
-    "🎵 Qo‘shiq (mp3) yuborsangiz, saqlab qo‘yaman va har videoga mosini o‘zim tanlayman.\n\n"
+    "🎵 Qo‘shiq (mp3) yuborsangiz, saqlab qo‘yaman va har videoga mosini o‘zim tanlayman.\n"
+    "🤖 Ovozni o‘zingiz yozmasangiz, matn tagidagi «ElevenLabs ovozida o‘qit» tugmasini bosing (/ovoz — diktor).\n\n"
     "Buyruqlar: /uzunlik — video uzunligi, /musiqa — qo‘shiqlar ro‘yxati, /kod 125 — kodni o‘zgartirish, "
     "/bekor — joriy ishni to‘xtatish."
 )
@@ -818,6 +898,7 @@ async def on_file(m: Message):
         if code:
             job.code = clean_code(code)
     JOBS[job.uid] = job
+    asyncio.create_task(remember_job(job))
     sm = await m.answer(f"🎬 Kino qabul qilindi ({human_mb(size)}). Yuklab olyapman…")
     job.status = Status(m.chat.id, sm.message_id)
     job.task = asyncio.create_task(analyse(job))
@@ -910,6 +991,14 @@ async def on_text(m: Message):
     job = JOBS.get(m.from_user.id)
     text = (m.text or "").strip()
     if not job:
+        try:
+            meta = (await music.load(bot, m.chat.id, WORK_DIR)).get("job") or {}
+        except Exception:
+            meta = {}
+        if meta.get("msg_id") and time.time() - meta.get("t", 0) < 48 * 3600:
+            return await m.answer("Server qayta ishga tushgani uchun avvalgi ish to‘xtab qolgan bo‘lishi mumkin. "
+                                  f"«{esc(meta.get('name') or meta.get('file_name') or 'kino')}» bilan davom ettiraymi?",
+                                  reply_markup=kb([("🔁 Davom ettirish", "resume")]))
         return await m.answer("Kinoni fayl qilib yuboring 🎬 (/start — yo‘riqnoma)")
     job.last = time.time()
     if job.asking == "name":
@@ -917,11 +1006,13 @@ async def on_text(m: Message):
         if code and not job.code:
             job.code = clean_code(code)
         await ask_next(job)
+        asyncio.create_task(remember_job(job))
         if not job.asking:
             await m.answer("✅ Rahmat! Matn tayyor bo‘lgach yuboraman.")
         return
     if job.asking == "code":
         job.code, job.asking = clean_code(text), None
+        asyncio.create_task(remember_job(job))
         return await m.answer("✅ Rahmat! Matn tayyor bo‘lgach yuboraman.")
     if job.script and not job.busy:
         sentences = split_sentences(text)
@@ -964,6 +1055,59 @@ async def on_music_button(c: CallbackQuery):
             await bot.send_message(chat_id, f"🗑 O‘chirildi: {esc(song['name'])}")
     music.save_soon(bot, chat_id, delay=0.5)
     await show_music(chat_id)
+
+
+@dp.callback_query(F.data == "tts")
+async def on_tts(c: CallbackQuery):
+    await c.answer()
+    job = JOBS.get(c.from_user.id)
+    if not job or not allowed(c.from_user.id) or not job.script or not job.movie:
+        return await bot.send_message(c.from_user.id, "Bu ish eskirgan. Kinoni qaytadan yuboring 🎬")
+    if not ELEVEN_KEY:
+        return await bot.send_message(job.chat_id, "ElevenLabs kaliti kiritilmagan.")
+    async with job.lock:
+        if job.busy:
+            return await bot.send_message(job.chat_id, "⏳ Hozir ishlayapman, biroz kuting…")
+        job.busy = "tts"
+    asyncio.create_task(tts_job(job))
+
+
+@dp.message(Command("ovoz"))
+async def cmd_voice(m: Message):
+    if not allowed(m.from_user.id):
+        return
+    if not ELEVEN_KEY:
+        return await m.answer("ElevenLabs hali ulanmagan.")
+    lib = await music.load(bot, m.chat.id, WORK_DIR)
+    cur = lib.get("ovoz") or eleven.VOICES[0][1]
+    lines = [f"{'✅' if v == cur else '▫️'} <b>{n}</b> — {d}" for n, v, d in eleven.VOICES]
+    await m.answer("🎙 <b>ElevenLabs diktori</b>\n\n" + "\n".join(lines),
+                   reply_markup=kb(*[[((("✅ " if v == cur else "") + n), f"voice:{v}")] for n, v, _ in eleven.VOICES]))
+
+
+@dp.callback_query(F.data.startswith("voice:"))
+async def on_voice_pick(c: CallbackQuery):
+    await c.answer()
+    if not allowed(c.from_user.id):
+        return
+    vid = c.data.split(":", 1)[1]
+    chat_id = c.message.chat.id if c.message else c.from_user.id
+    lib = await music.load(bot, chat_id, WORK_DIR)
+    lib["ovoz"] = vid
+    music.save_soon(bot, chat_id, delay=0.5)
+    await bot.send_message(chat_id, f"✅ Diktor: <b>{eleven.voice_name(vid)}</b>")
+
+
+@dp.callback_query(F.data == "resume")
+async def on_resume(c: CallbackQuery):
+    await c.answer()
+    if not allowed(c.from_user.id):
+        return
+    chat_id = c.message.chat.id if c.message else c.from_user.id
+    job = JOBS.get(c.from_user.id)
+    if job and job.task and not job.task.done():
+        return await bot.send_message(chat_id, "⏳ Ish allaqachon davom etyapti.")
+    await resume_job(c.from_user.id, chat_id)
 
 
 @dp.callback_query(F.data.in_({"vgo", "vclear"}))
@@ -1094,15 +1238,32 @@ async def on_startup():
             BotCommand(command="kod", description="Kino kodini o‘zgartirish"),
             BotCommand(command="musiqa", description="Qo‘shiqlar ro‘yxati"),
             BotCommand(command="uzunlik", description="Video uzunligi (1–3 daqiqa)"),
+            BotCommand(command="ovoz", description="ElevenLabs diktorini tanlash"),
         ])
     except Exception as e:
         log.warning("set_my_commands: %r", e)
+    try:
+        du = shutil.disk_usage(WORK_DIR)
+        log.info("Ish papkasi: %s (bo'sh: %s)", WORK_DIR, human_mb(du.free))
+    except Exception:
+        pass
     me = await bot.get_me()
-    log.info("Bot ulandi: @%s (katta fayllar: %s, Gemini: %s)", me.username, "ha" if BIG else "yo‘q",
-             "ha" if GEMINI_API_KEY else "yo‘q")
+    log.info("Bot ulandi: @%s (katta fayllar: %s, Gemini: %s, ElevenLabs: %s)", me.username, "ha" if BIG else "yo‘q",
+             "ha" if GEMINI_API_KEY else "yo‘q", "ha" if ELEVEN_KEY else "yo‘q")
 
 
 async def on_shutdown():
+    """Server to'xtatilayotganda (yangilanish yoki qayta ishga tushish) ishi bor foydalanuvchilarni ogohlantiradi."""
+    now = time.time()
+    for job in list(JOBS.values()):
+        working = job.busy or (job.task and not job.task.done())
+        if working and now - job.last < 3 * 3600:
+            try:
+                await bot.send_message(job.chat_id, "⚠️ Server qayta ishga tushyapti, kino bilan ish to‘xtab qoldi. "
+                                                    "1–2 daqiqadan keyin «🔁 Davom ettirish» ni bosing.",
+                                       reply_markup=kb([("🔁 Davom ettirish", "resume")]))
+            except Exception as e:
+                log.warning("ogohlantirish yuborilmadi: %r", e)
     if BIG:
         await BIG.close()
     if HTTP:

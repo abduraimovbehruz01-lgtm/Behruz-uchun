@@ -100,13 +100,15 @@ def out_size(side):
     return SIZE if side >= SIZE * 0.92 or side == 0 else (720 if SIZE > 720 else SIZE)
 
 
-async def audio_codec(movie):
+async def audio_stream_info(movie):
     try:
         out, _ = await run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
-                            "stream=codec_name", "-of", "default=nw=1:nk=1", movie], timeout=120)
-        return out.decode().strip().lower()
-    except FFError:
-        return ""
+                            "stream=codec_name,channels,bit_rate", "-of", "json", movie], timeout=120)
+        st = (json.loads(out or b"{}").get("streams") or [{}])[0]
+        return (str(st.get("codec_name") or "").lower(), int(st.get("channels") or 0),
+                int(st.get("bit_rate") or 0))
+    except (FFError, ValueError):
+        return "", 0, 0
 
 
 async def extract_audio_chunks(movie, outdir, duration, max_chunk=4500):
@@ -117,8 +119,9 @@ async def extract_audio_chunks(movie, outdir, duration, max_chunk=4500):
     chunk = math.ceil(duration / n) + 1
     for old in glob.glob(os.path.join(outdir, "audio_*")):
         os.remove(old)
-    codec = await audio_codec(movie)
-    if codec in ("aac", "mp3"):
+    codec, channels, bitrate = await audio_stream_info(movie)
+    # kichik (stereo, ≤192 kbit/s) AAC/MP3 — nusxalanadi; katta yoki ko'p kanalli — yengil mp3 ga o'giriladi (diskni tejash)
+    if codec in ("aac", "mp3") and 0 < channels <= 2 and 0 < bitrate <= 192000:
         ext, mime = (".aac", "audio/aac") if codec == "aac" else (".mp3", "audio/mpeg")
         enc = ["-c:a", "copy"]
         pre = []

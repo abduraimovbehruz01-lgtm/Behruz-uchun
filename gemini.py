@@ -211,14 +211,13 @@ class Gemini:
             url = r.headers.get("X-Goog-Upload-URL")
         if not url:
             raise GeminiError(0, "yuklash manzili kelmadi")
-        with open(path, "rb") as f:
-            data = f.read()
-        async with session.post(url, data=data, headers={
-            "X-Goog-Upload-Offset": "0", "X-Goog-Upload-Command": "upload, finalize",
-        }, timeout=aiohttp.ClientTimeout(total=900)) as r:
-            if r.status != 200:
-                raise GeminiError(r.status, "fayl yuklanmadi: " + (await r.text())[:300])
-            info = (await r.json(content_type=None)).get("file") or {}
+        with open(path, "rb") as f:  # diskdan oqim bilan yuboriladi — xotiraga to'liq o'qilmaydi
+            async with session.post(url, data=f, headers={
+                "Content-Length": str(size), "X-Goog-Upload-Offset": "0", "X-Goog-Upload-Command": "upload, finalize",
+            }, timeout=aiohttp.ClientTimeout(total=900)) as r:
+                if r.status != 200:
+                    raise GeminiError(r.status, "fayl yuklanmadi: " + (await r.text())[:300])
+                info = (await r.json(content_type=None)).get("file") or {}
         name = info.get("name")
         for _ in range(150):
             st = info.get("state")
