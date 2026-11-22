@@ -37,6 +37,8 @@ OWNER_IDS = {int(x) for x in re.findall(r"\d+", os.environ.get("OWNER_IDS", ""))
 WATERMARK = os.environ.get("WATERMARK", "@behruzfilmbot").strip()
 CTA_TEXT = os.environ.get("CTA_TEXT", "Kinoni ko‘rmoqchi bo‘lsangiz, profilimdagi botga {kod} kodini yuboring.")
 CTA_LINE1 = os.environ.get("CTA_LINE1", WATERMARK).strip()
+CAPTION_CTA = os.environ.get("CAPTION_CTA", "🔢 Kod: {kod} — kinoni ko‘rish uchun profilimdagi botga yuboring 🍿")
+BASE_TAGS = os.environ.get("BASE_HASHTAGS", "#kino #kinolar #film #filmlar")
 PUBLIC_URL = (os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
 PORT = int(os.environ.get("PORT", "10000"))
 WORK_DIR = os.environ.get("WORK_DIR", "/tmp/kino")
@@ -78,6 +80,7 @@ class Job:
     script: list | None = None
     title: str = ""
     caption: str = ""
+    tags: list = field(default_factory=list)
     voice: str | None = None
     concat: str | None = None
     bg: str | None = None
@@ -206,10 +209,52 @@ def build_script(job, res):
         it[1], it[2] = round(a, 2), round(min(b, dur), 2)
     script = [{"matn": t, "start": a, "end": b} for t, a, b in items]
     job.title = (res.get("nomi") or job.name or "").strip()
-    job.caption = (res.get("izoh") or "").strip()
+    job.caption = hide_title((res.get("izoh") or "").strip(), job)
+    job.tags = clean_tags(res.get("heshteglar") or [], job)
     if job.code:
         script.append(cta_item(job))
     return script
+
+
+def _title_words(job):
+    """Kino nomi (yilsiz) — tavsif va heshteglarda chiqmasligi uchun."""
+    res = []
+    for t in (job.title, job.name):
+        t = re.sub(r"[\(\[]?\b(19|20)\d\d\b[\)\]]?", "", t or "").strip(" -:,.")
+        if len(t) >= 3:
+            res.append(t)
+    return res
+
+
+def hide_title(text, job):
+    for t in _title_words(job):
+        text = re.sub(re.escape(t), "bu kino", text, flags=re.I)
+    # gap boshida bo'lsa — bosh harf bilan
+    return re.sub(r"(^|[.!?…]\s+)bu kino", lambda m: m.group(1) + "Bu kino", text)
+
+
+def clean_tags(tags, job):
+    banned = {re.sub(r"[\W_]+", "", t.lower()) for t in _title_words(job)}
+    out, seen = [], set()
+    for t in BASE_TAGS.split() + [str(x) for x in tags]:
+        t = "#" + re.sub(r"[^\w]+", "", t.strip().lstrip("#"), flags=re.UNICODE)
+        key = t[1:].lower()
+        if len(key) < 2 or key in seen or any(b and (b in key or key in b) and len(key) > 3 for b in banned):
+            continue
+        seen.add(key)
+        out.append(t)
+    return out[:16]
+
+
+def insta_caption(job):
+    parts = []
+    if job.caption:
+        parts.append(job.caption)
+    if job.code:
+        parts.append(CAPTION_CTA.format(kod=job.code))
+    if job.tags:
+        parts.append(" ".join(job.tags))
+    return "\n\n".join(parts)
 
 
 def remap_script(job, sentences):
@@ -435,20 +480,17 @@ async def finish(job, layout, st=None):
                 w, h = video.V_W, video.V_H
             log.info("yakuniy %s %.0fs", layout, time.time() - t0)
         job.layout = layout
-        lines = []
-        if job.title:
-            lines.append(f"🎬 <b>{esc(job.title)}</b>")
-        if job.caption:
-            lines.append(esc(job.caption[:600]))
-        if job.code:
-            lines.append(f"🔢 Kod: {esc(job.code)}")
-        lines.append("\n🎙 Boshqa ovoz yuborsangiz — qayta yig‘aman.\n✏️ Matnni o‘zgartirish uchun yangi matnni yozing.")
+        note = "✅ Tayyor!\n🎙 Boshqa ovoz yuborsangiz — qayta yig‘aman.\n✏️ Matnni o‘zgartirish uchun yangi matnni yozing."
         other = ("📐 9:16 (Reels)", "v916") if layout == "square" else ("⬛ 1:1 (namunadek)", "v11")
         await bot.send_video(job.chat_id, FSInputFile(out, filename=os.path.basename(out)),
                              duration=int(round(job.timing["total"])), width=w, height=h,
-                             supports_streaming=True, caption="\n".join(lines)[:1024],
+                             supports_streaming=True, caption=note,
                              reply_markup=kb([other], [("🔄 Boshqa matn", "regen")]), request_timeout=900)
         await st.delete()
+        cap = insta_caption(job)
+        if cap:
+            await bot.send_message(job.chat_id, "📝 <b>Instagram uchun tavsif</b> (bosib nusxalang):\n\n"
+                                   f"<pre>{esc(cap)[:3800]}</pre>")
     except asyncio.CancelledError:
         raise
     except Exception as e:

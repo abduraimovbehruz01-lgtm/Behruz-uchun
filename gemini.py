@@ -93,8 +93,9 @@ SCRIPT_SCHEMA = {
             },
         },
         "izoh": {"type": "STRING"},
+        "heshteglar": {"type": "ARRAY", "items": {"type": "STRING"}},
     },
-    "required": ["nomi", "jumlalar"],
+    "required": ["nomi", "jumlalar", "izoh", "heshteglar"],
 }
 
 
@@ -135,12 +136,18 @@ def script_prompt(name, duration, moments, variant=0):
         "- Then retell the story in chronological order, in the present tense, simply and vividly; use the "
         "characters' names if known.\n"
         "- Do NOT reveal the ending: stop at the most intense moment and leave intrigue (cliffhanger).\n"
+        "- NEVER say the movie's title (in any language) in the narration — viewers must not learn which movie it is; "
+        "character names are fine.\n"
         "- No greetings, no call to action, no hashtags, no emojis — an ending phrase will be added automatically.\n"
         "- For every sentence give \"boshlanish\" and \"tugash\" (H:MM:SS, movie time): the part of the movie "
         "whose scenes best illustrate that sentence, 8–40 seconds long, taken from the moments above. "
         "Sentence 1 may use the most dramatic moment of the film.\n"
-        "- \"nomi\": the movie title as Uzbek viewers know it; \"izoh\": a 1–2 sentence Instagram caption in "
-        "Uzbek without hashtags."
+        "- \"nomi\": the movie title as Uzbek viewers know it (for internal use only).\n"
+        "- \"izoh\": an intriguing Instagram caption in Uzbek, 2–3 short sentences, 1–2 fitting emojis allowed, that makes "
+        "people want to watch. It must NOT contain the movie title, the year, actor names or anything that reveals which "
+        "movie it is; no hashtags here.\n"
+        "- \"heshteglar\": 10–14 popular hashtags for this video (genre and mood, in Uzbek and English, e.g. #qorqinchli "
+        "#horror #triller #drama). No hashtags with the movie title, actors or year."
         f"{extra}"
     )
 
