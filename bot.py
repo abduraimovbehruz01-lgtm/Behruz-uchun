@@ -91,6 +91,7 @@ class Job:
 
 
 JOBS: dict[int, Job] = {}
+GEMINI_STATUS = "tekshirilmagan"
 
 
 class Status:
@@ -476,8 +477,8 @@ async def cmd_start(m: Message):
     if not allowed(m.from_user.id):
         return await m.answer(f"Bu bot shaxsiy 🙂\nSizning ID: <code>{m.from_user.id}</code>")
     warn = []
-    if not GEMINI_API_KEY:
-        warn.append("⚠️ GEMINI_API_KEY kiritilmagan")
+    if not GEMINI_STATUS.startswith("ishlaydi"):
+        warn.append(f"⚠️ Gemini: {esc(GEMINI_STATUS)}")
     if not BIG:
         warn.append("⚠️ API_ID/API_HASH kiritilmagan — 20 MB dan katta fayllar olinmaydi")
     await m.answer(WELCOME + f"\n\nSizning ID: <code>{m.from_user.id}</code>" + ("\n\n" + "\n".join(warn) if warn else ""))
@@ -647,11 +648,37 @@ async def keepalive():
                 log.warning("keepalive: %r", e)
 
 
+async def check_gemini():
+    """Kalit ishlashini va qaysi modellar ochiqligini tekshiradi (ishga tushganda bir marta)."""
+    global GEMINI_STATUS
+    if not GEMINI_API_KEY:
+        GEMINI_STATUS = "kalit kiritilmagan"
+        return
+    try:
+        async with HTTP.get(f"{gemini.BASE}/v1beta/models?pageSize=1000", headers={"x-goog-api-key": GEMINI_API_KEY},
+                            timeout=aiohttp.ClientTimeout(total=30)) as r:
+            txt = await r.text()
+            if r.status != 200:
+                GEMINI_STATUS = f"xato {r.status}: {re.sub(chr(10), ' ', txt)[:160]}"
+                return
+            data = await r.json(content_type=None)
+        names = {m.get("name", "").split("/")[-1] for m in data.get("models", [])}
+        avail = [m for m in gem.models if m in names]
+        if avail:
+            gem.models = avail
+        GEMINI_STATUS = "ishlaydi ✅ (" + ", ".join(gem.models[:4]) + ")"
+    except Exception as e:
+        GEMINI_STATUS = f"tekshirib bo‘lmadi: {e!r}"[:200]
+    finally:
+        log.info("Gemini: %s", GEMINI_STATUS)
+
+
 async def on_startup():
     global HTTP
     os.makedirs(WORK_DIR, exist_ok=True)
     HTTP = aiohttp.ClientSession()
     asyncio.create_task(keepalive())
+    await check_gemini()
     try:
         await bot.set_my_commands([
             BotCommand(command="start", description="Yo‘riqnoma"),
