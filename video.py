@@ -10,9 +10,7 @@ import wave
 import numpy as np
 
 FPS = 24
-SIZE = 720  # kvadrat tomoni (namunadek 720x720)
-V_W, V_H = 720, 1280  # 9:16 variant
-V_TOP = (V_H - SIZE) // 2
+SIZE = int(os.environ.get("VIDEO_SIZE", "1080"))  # kvadrat tomoni: 1080x1080 (Instagram uchun eng yaxshi sifat)
 
 
 def _font(names):
@@ -28,15 +26,24 @@ FONT_BOLD = os.environ.get("FONT_BOLD") or _font([
 ])
 
 # Namunadagidek: biroz qoraytirilgan, sovuq (ko'kish) soyalar, rangi pastroq, kontrast va vinyetka
+# Namunadagidek kino ko'rinishi, lekin yorqinroq va tiniqroq: yengil kontrast, sovuqroq ranglar, yumshoq vinyetka, aniqlik
 GRADE = os.environ.get("VIDEO_GRADE") or (
-    "eq=contrast=1.10:brightness=-0.025:saturation=0.80:gamma=0.98,"
-    "lutyuv=u='clip(val+4,0,255)':v='clip(val-3,0,255)',"
-    "vignette=angle=PI/5"
+    "eq=contrast=1.06:brightness=-0.01:saturation=0.92,"
+    "lutyuv=u='clip(val+3,0,255)':v='clip(val-2,0,255)',"
+    "vignette=angle=PI/6"
 )
 
 
 THREADS = os.environ.get("FFMPEG_THREADS", "2")  # bepul serverda xotira tejash uchun
 FINAL_PRESET = os.environ.get("FINAL_PRESET", "veryfast")
+CRF = os.environ.get("VIDEO_CRF", "19")
+MAX_MB = float(os.environ.get("MAX_VIDEO_MB", "45"))  # Telegram bot 50 MB gacha video yubora oladi
+
+
+def video_maxrate(total_sec):
+    """Butun video MAX_MB dan oshmasligi uchun video bitreyti chegarasi (kbit/s)."""
+    kbps = MAX_MB * 8 * 1024 / max(20.0, float(total_sec)) - 200
+    return int(max(1800, min(9000, kbps)))
 
 
 class FFError(RuntimeError):
@@ -68,15 +75,29 @@ async def run(cmd, timeout=None):
 async def probe(path):
     out, _ = await run([
         "ffprobe", "-v", "error",
-        "-show_entries", "format=duration:stream=codec_type,width,height:stream_disposition=attached_pic",
+        "-show_entries", "format=duration:stream=codec_type,width,height,sample_aspect_ratio:stream_disposition=attached_pic",
         "-of", "json", path,
     ], timeout=180)
     j = json.loads(out or b"{}")
     dur = float((j.get("format") or {}).get("duration") or 0)
     streams = j.get("streams") or []
-    has_v = any(s.get("codec_type") == "video" and not (s.get("disposition") or {}).get("attached_pic") for s in streams)
+    vids = [s for s in streams if s.get("codec_type") == "video" and not (s.get("disposition") or {}).get("attached_pic")]
     has_a = any(s.get("codec_type") == "audio" for s in streams)
-    return {"duration": dur, "video": has_v, "audio": has_a}
+    side = 0
+    if vids:
+        w, h = int(vids[0].get("width") or 0), int(vids[0].get("height") or 0)
+        try:
+            num, den = (vids[0].get("sample_aspect_ratio") or "1:1").split(":")
+            sar = float(num) / float(den) if float(den) else 1.0
+        except ValueError:
+            sar = 1.0
+        side = int(min(w * (sar or 1.0), h))
+    return {"duration": dur, "video": bool(vids), "audio": has_a, "side": side}
+
+
+def out_size(side):
+    """Kino sifatiga mos chiqish o'lchami: 1080p kinodan 1080x1080, 720p kinodan 720x720 (sun'iy kattalashtirmaslik)."""
+    return SIZE if side >= SIZE * 0.92 or side == 0 else (720 if SIZE > 720 else SIZE)
 
 
 async def audio_codec(movie):
@@ -284,7 +305,7 @@ def sentence_bounds(start, end, pauses, weights):
 
 # ---------------- Sahnalarni rejalash ----------------
 
-def plan_shots(seg_durs, windows, duration):
+def plan_shots(seg_durs, windows, duration, base_len=2.0):
     """Har bir gap uchun kinodan sahnalar (har biri ~2 soniya, birinchi gapda tezroq) tanlaydi.
     seg_durs: yakuniy videoda har bir gap davomiyligi; windows: [(boshlanish, tugash)] kino vaqtida."""
     lo_lim = min(20.0, duration * 0.01)
@@ -299,7 +320,7 @@ def plan_shots(seg_durs, windows, duration):
         nfr = edges[i + 1] - edges[i]
         if nfr <= 0:
             continue
-        shot_len = 1.15 if i == 0 else (2.4 if i == last else 2.0)
+        shot_len = 1.15 if i == 0 else (base_len + 0.4 if i == last else base_len)
         n = max(1, int(round(nfr / (shot_len * FPS))))
         base, extra = divmod(nfr, n)
         lens = [base + (1 if j < extra else 0) for j in range(n)]
@@ -332,8 +353,9 @@ def plan_shots(seg_durs, windows, duration):
     return shots
 
 
-_CROP = ("crop=w='2*trunc(if(gt(iw*sar,ih),ih/sar,iw)/2)':h='2*trunc(if(gt(iw*sar,ih),ih,iw*sar)/2)',"
-         f"scale={SIZE}:{SIZE}:flags=bilinear,setsar=1")
+def _crop(size):
+    return ("crop=w='2*trunc(if(gt(iw*sar,ih),ih/sar,iw)/2)':h='2*trunc(if(gt(iw*sar,ih),ih,iw*sar)/2)',"
+            f"scale={size}:{size}:flags=lanczos,setsar=1")
 
 
 def _write(path, text):
@@ -347,37 +369,41 @@ def _dt(textfile, size, x, y, extra=""):
             + (":" + extra if extra else ""))
 
 
-def text_overlays(workdir, watermark="", cta=None, fade=False):
+def text_overlays(workdir, watermark="", cta=None, fade=False, size=None):
     """Kadrga yoziladigan yozuvlar: pastda watermark, oxirgi gapda «KOD: 123»."""
+    size = size or SIZE
+    k = size / 720
     res = []
+    sh = max(1, int(round(k)))
     if watermark:
         wm = _write(os.path.join(workdir, "wm.txt"), watermark)
-        res.append(_dt(wm, 24, "(w-text_w)/2", "h-text_h-34",
-                       "fontcolor=white@0.82:shadowcolor=black@0.7:shadowx=1:shadowy=1"))
+        res.append(_dt(wm, int(26 * k), "(w-text_w)/2", f"h-text_h-{int(34 * k)}",
+                       f"fontcolor=white@0.82:shadowcolor=black@0.7:shadowx={sh}:shadowy={sh}"))
     if cta and cta.get("line2"):
         alpha = ":alpha='min(1,t/0.35)'" if fade else ""
-        y2 = int(SIZE * 0.66)
+        y2 = int(size * 0.66)
         if cta.get("line1"):
             l1 = _write(os.path.join(workdir, "cta1.txt"), cta["line1"])
-            res.append(_dt(l1, 30, "(w-text_w)/2", str(y2 - 48),
-                           "fontcolor=white:shadowcolor=black@0.85:shadowx=2:shadowy=2" + alpha))
+            res.append(_dt(l1, int(30 * k), "(w-text_w)/2", str(y2 - int(48 * k)),
+                           f"fontcolor=white:shadowcolor=black@0.85:shadowx={2 * sh}:shadowy={2 * sh}" + alpha))
         l2 = _write(os.path.join(workdir, "cta2.txt"), cta["line2"])
-        res.append(_dt(l2, 60, "(w-text_w)/2", str(y2),
-                       "fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=18" + alpha))
+        res.append(_dt(l2, int(60 * k), "(w-text_w)/2", str(y2),
+                       f"fontcolor=white:box=1:boxcolor=black@0.55:boxborderw={int(18 * k)}" + alpha))
     return res
 
 
-async def render_shot(movie, t, frames, out_video, out_audio, has_audio=True, overlays=()):
+async def render_shot(movie, t, frames, out_video, out_audio, has_audio=True, overlays=(), maxrate=6000, size=None):
     """Bitta sahna: kvadrat qirqish + rang + yozuvlar, yakuniy sifatda. Ovozi alohida WAV ga."""
     d = frames / FPS
-    vf = ",".join([_CROP, GRADE, f"fps={FPS}", "format=yuv420p", *overlays])
+    vf = ",".join([_crop(size or SIZE), GRADE, f"fps={FPS}", "format=yuv420p", *overlays])
     cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-filter_threads", THREADS,
            "-threads", THREADS, "-ss", f"{t:.3f}", "-i", movie]
     if not has_audio:
         cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
     cmd += [
         "-map", "0:V:0", "-vf", vf, "-frames:v", str(frames), "-an",
-        "-c:v", "libx264", "-preset", FINAL_PRESET, "-crf", "21", "-g", str(FPS * 2), "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", FINAL_PRESET, "-crf", CRF, "-maxrate", f"{maxrate}k", "-bufsize", f"{2 * maxrate}k",
+        "-g", str(FPS * 2), "-pix_fmt", "yuv420p", "-profile:v", "high",
         "-threads", THREADS, "-video_track_timescale", "24000", out_video,
         "-map", "0:a:0" if has_audio else "1:a:0", "-vn",
         "-af", f"aresample=44100,aformat=sample_fmts=s16:channel_layouts=stereo,atrim=0:{d:.4f},apad=whole_dur={d:.4f}",
@@ -407,7 +433,7 @@ async def measure_lufs(path):
 
 
 async def final_mux(video_path, bg_wav, voice_path, v_start, v_end, total, out, voice_db=-20.0, target=-14.0,
-                    music=None):
+                    music=None, size=None):
     """Tayyor sahnalar (nusxalanadi, qayta kodlanmaydi) + sizning ovozingiz + kino ovozi + (bo'lsa) musiqa.
     Kino ovozi va musiqa siz gapirganda pasayadi. Umumiy balandlik Instagram me'yoriga (≈ -14 LUFS) keltiriladi.
     music: {"path": fayl, "start": soniya, "gain_db": dB}"""
@@ -448,18 +474,27 @@ async def final_mux(video_path, bg_wav, voice_path, v_start, v_end, total, out, 
     lufs = await measure_lufs(out)
     if lufs is not None and abs(lufs - target) > 1.0:
         await mux(max(-10.0, min(12.0, target - lufs)))
-    return {"width": SIZE, "height": SIZE, "duration": total}
+    return {"width": size or SIZE, "height": size or SIZE, "duration": total}
 
 
-async def make_vertical(square_mp4, out):
+def vertical_dims(size):
+    vh = int(round(size * 16 / 9 / 2)) * 2
+    return size, vh, (vh - size) // 2
+
+
+async def make_vertical(square_mp4, out, total=60.0, size=None):
     """9:16 (Reels) variant: kvadrat video o'rtada, orqasida uning xiralashtirilgan nusxasi."""
+    size = size or SIZE
+    vw, vh, top = vertical_dims(size)
+    mr = video_maxrate(total)
+    cw, ch = int(size * 0.47) // 2 * 2, int(size * 0.83) // 2 * 2
     # fonni kichraytirib xiralashtirish → kattalashtirish: chiroyli va juda arzon
-    fc = (f"[0:v]split=2[va][vb];[va]crop=338:600:(iw-338)/2:0,scale=144:256,boxblur=4:1,scale={V_W}:{V_H}:flags=bilinear,"
-          f"eq=brightness=-0.12:saturation=0.8[bg];[bg][vb]overlay=0:{V_TOP},format=yuv420p[v]")
+    fc = (f"[0:v]split=2[va][vb];[va]crop={cw}:{ch}:(iw-{cw})/2:0,scale=144:256,boxblur=4:1,scale={vw}:{vh}:flags=bilinear,"
+          f"eq=brightness=-0.12:saturation=0.8[bg];[bg][vb]overlay=0:{top},format=yuv420p[v]")
     await run([
         "ffmpeg", "-nostdin", "-v", "error", "-y", "-filter_threads", THREADS, "-filter_complex_threads", THREADS,
         "-i", square_mp4, "-filter_complex", fc, "-map", "[v]", "-map", "0:a:0",
-        "-c:v", "libx264", "-preset", FINAL_PRESET, "-crf", "22", "-threads", THREADS,
-        "-c:a", "copy", "-movflags", "+faststart", out,
+        "-c:v", "libx264", "-preset", FINAL_PRESET, "-crf", CRF, "-maxrate", f"{mr}k", "-bufsize", f"{2 * mr}k",
+        "-profile:v", "high", "-threads", THREADS, "-c:a", "copy", "-movflags", "+faststart", out,
     ], timeout=1800)
-    return {"width": V_W, "height": V_H}
+    return {"width": vw, "height": vh}

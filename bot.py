@@ -35,7 +35,7 @@ API_HASH = os.environ.get("API_HASH", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "").strip() or None
 OWNER_IDS = {int(x) for x in re.findall(r"\d+", os.environ.get("OWNER_IDS", ""))}
-WATERMARK = os.environ.get("WATERMARK", "@behruzfilmbot").strip()
+WATERMARK = os.environ.get("WATERMARK", "BehruzFilm").strip()
 CTA_TEXT = os.environ.get("CTA_TEXT", "Kinoni ko‘rmoqchi bo‘lsangiz, profilimdagi botga {kod} kodini yuboring.")
 CTA_LINE1 = os.environ.get("CTA_LINE1", WATERMARK).strip()
 CAPTION_CTA = os.environ.get("CAPTION_CTA", "🔢 Kod: {kod} — kinoni ko‘rish uchun profilimdagi botga yuboring 🍿")
@@ -47,6 +47,8 @@ MAX_BYTES = int(float(os.environ.get("MAX_FILE_GB", "2")) * 1024 ** 3)
 DL_WORKERS = int(os.environ.get("DOWNLOAD_WORKERS", "6"))
 BOT_API_LIMIT = 20 * 1024 * 1024
 TAIL = 0.8  # oxirgi gapdan keyin video yana shuncha soniya davom etadi
+DEFAULT_LEN = int(os.environ.get("VIDEO_LEN", "120"))  # hikoya uzunligi (soniya), /uzunlik bilan o'zgaradi
+LEN_CHOICES = (60, 90, 120, 180)
 VIDEO_EXT = re.compile(r"\.(mkv|mp4|avi|mov|m4v|webm|ts|wmv|flv|mpg|mpeg|3gp)$", re.I)
 
 bot = Bot(BOT_TOKEN or "0:none", default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -76,8 +78,12 @@ class Job:
     movie: str | None = None
     duration: float = 0.0
     has_audio: bool = True
+    out_px: int = 1080
     chunks: list | None = None
     moments: list | None = None
+    summary: str = ""
+    characters: list = field(default_factory=list)
+    target_sec: int = 120
     script: list | None = None
     title: str = ""
     caption: str = ""
@@ -347,6 +353,7 @@ async def analyse(job):
             if not info["video"] or info["duration"] < 20:
                 raise RuntimeError("Bu fayl kino emasga o‘xshaydi (video topilmadi yoki juda qisqa)")
             job.movie, job.duration, job.has_audio = path, info["duration"], info["audio"]
+            job.out_px = video.out_size(info.get("side", 0))
             if not job.has_audio:
                 raise RuntimeError("Kinoda ovoz yo‘lagi yo‘q — Gemini voqealarni eshita olmaydi")
         job.last = time.time()
@@ -357,21 +364,28 @@ async def analyse(job):
         if not await wait_for(lambda: job.name, 1800):
             job.name = os.path.splitext(job.file_name)[0]
         if not job.moments:
-            moments = []
+            moments, summaries, chars = [], [], {}
             for k, (cpath, mime, start, length) in enumerate(job.chunks):
                 n = len(job.chunks)
                 await st.set(f"🤖 Gemini kinoni eshityapti{f' ({k + 1}/{n})' if n > 1 else ''}… Bu bir necha daqiqa oladi.",
                              force=True)
-                moments += await gem.scene_log(HTTP, cpath, mime, job.name, k, n, start, length)
+                part = await gem.scene_log(HTTP, cpath, mime, job.name, k, n, start, length)
+                moments += part["moments"]
+                if part["summary"]:
+                    summaries.append(part["summary"])
+                for c in part["characters"]:
+                    chars.setdefault(c["ism"].lower(), c)
                 job.last = time.time()
             if len(moments) < 3:
                 raise RuntimeError("Gemini kinodan yetarli voqea topmadi")
             moments.sort(key=lambda m: m["t"])
-            job.moments = moments
+            job.moments, job.summary, job.characters = moments, " ".join(summaries), list(chars.values())
         await st.set("✍️ Hikoya matni yozilmoqda…", force=True)
         if not job.code:
             await wait_for(lambda: job.code, 1800)
-        res = await gem.write_script(HTTP, job.name, job.duration, job.moments, job.variant)
+        job.target_sec = await get_len(job.chat_id)
+        res = await gem.write_script(HTTP, job.name, job.duration, job.moments, job.variant, job.target_sec,
+                                     job.summary, job.characters)
         job.script = build_script(job, res)
         job.last = time.time()
         await st.set("✅ Matn tayyor! Pastda 👇", force=True)
@@ -397,7 +411,9 @@ async def regen(job):
     st = Status(job.chat_id, (await bot.send_message(job.chat_id, "✍️ Yangi matn yozilmoqda…")).message_id)
     try:
         job.variant += 1
-        res = await gem.write_script(HTTP, job.name, job.duration, job.moments, job.variant)
+        job.target_sec = await get_len(job.chat_id)
+        res = await gem.write_script(HTTP, job.name, job.duration, job.moments, job.variant, job.target_sec,
+                                     job.summary, job.characters)
         job.script = build_script(job, res)
         await st.delete()
         await send_script(job)
@@ -423,7 +439,8 @@ async def render(job):
         seg_durs[-1] += TAIL
         total = float(sum(seg_durs))
         windows = [(s["start"], s["end"]) for s in job.script]
-        shots = video.plan_shots(seg_durs, windows, job.duration)
+        shots = video.plan_shots(seg_durs, windows, job.duration, base_len=2.0 if total < 75 else 2.4)
+        maxrate = video.video_maxrate(total)
         has_cta = bool(job.script[-1].get("cta") and job.code)
         cta = {"line1": CTA_LINE1, "line2": f"KOD: {job.code}"} if has_cta else None
         last = len(job.script) - 1
@@ -437,14 +454,17 @@ async def render(job):
                 t = await video.choose_start(job.movie, sh["t"], d, job.duration, used)
                 used.append((t, t + d))
                 is_cta = has_cta and sh["sentence"] == last
-                ov = video.text_overlays(job.dir, WATERMARK, cta if is_cta else None, fade=is_cta and first_cta)
+                ov = video.text_overlays(job.dir, WATERMARK, cta if is_cta else None, fade=is_cta and first_cta,
+                                         size=job.out_px)
                 first_cta = first_cta and not is_cta
                 vo, ao = os.path.join(job.dir, f"shot_{i:03d}.mp4"), os.path.join(job.dir, f"shot_{i:03d}.wav")
-                await video.render_shot(job.movie, t, sh["frames"], vo, ao, job.has_audio, ov)
+                await video.render_shot(job.movie, t, sh["frames"], vo, ao, job.has_audio, ov, maxrate, job.out_px)
                 vfiles.append(vo)
                 afiles.append(ao)
                 job.last = time.time()
-                await st.set(f"✂️ Sahnalar qirqilmoqda: {i + 1}/{len(shots)}")
+                left = (time.time() - t0) / (i + 1) * (len(shots) - i - 1)
+                eta = f" (taxminan {max(1, round(left / 60))} daqiqa qoldi)" if i >= 2 else ""
+                await st.set(f"✂️ Sahnalar qirqilmoqda: {i + 1}/{len(shots)}{eta}")
             job.concat = os.path.join(job.dir, "video.mp4")
             job.bg = os.path.join(job.dir, "bg.wav")
             await video.concat(vfiles, job.concat)
@@ -480,16 +500,16 @@ async def finish(job, layout, st=None):
                 sq = os.path.join(job.dir, "kino_1x1.mp4")
                 tm = job.timing
                 await video.final_mux(job.concat, job.bg, job.voice, tm["vs"], tm["ve"], tm["total"], sq, tm["level"],
-                                      music=mus)
+                                      music=mus, size=job.out_px)
                 job.square = sq
                 job.music_name = mus["name"] if mus else ""
-            out, w, h = job.square, video.SIZE, video.SIZE
+            out, w, h = job.square, job.out_px, job.out_px
             if layout == "vertical":
                 out = os.path.join(job.dir, "kino_9x16.mp4")
                 if not os.path.exists(out) or os.path.getmtime(out) < os.path.getmtime(job.square):
                     await st.set("📐 9:16 variant tayyorlanmoqda…", force=True)
-                    await video.make_vertical(job.square, out)
-                w, h = video.V_W, video.V_H
+                    await video.make_vertical(job.square, out, job.timing["total"], job.out_px)
+                w, h, _ = video.vertical_dims(job.out_px)
             log.info("yakuniy %s %.0fs", layout, time.time() - t0)
         job.layout = layout
         note = "✅ Tayyor!"
@@ -503,10 +523,14 @@ async def finish(job, layout, st=None):
         elif job.no_music:
             rows.append([("🎵 Musiqa qo‘shish", "mback")])
         rows.append([("🔄 Boshqa matn", "regen")])
-        await bot.send_video(job.chat_id, FSInputFile(out, filename=os.path.basename(out)),
-                             duration=int(round(job.timing["total"])), width=w, height=h,
-                             supports_streaming=True, caption=note,
-                             reply_markup=kb(*rows), request_timeout=900)
+        if os.path.getsize(out) > 49 * 1024 * 1024 and BIG is not None:
+            await BIG.send_video(job.chat_id, out, job.timing["total"], w, h, hint_msg_id=job.msg_id)
+            await bot.send_message(job.chat_id, note, reply_markup=kb(*rows))
+        else:
+            await bot.send_video(job.chat_id, FSInputFile(out, filename=os.path.basename(out)),
+                                 duration=int(round(job.timing["total"])), width=w, height=h,
+                                 supports_streaming=True, caption=note,
+                                 reply_markup=kb(*rows), request_timeout=900)
         await st.delete()
         cap = insta_caption(job)
         if cap:
@@ -521,6 +545,21 @@ async def finish(job, layout, st=None):
     finally:
         job.busy = None
         job.last = time.time()
+
+
+# ---------------- Sozlamalar ----------------
+
+async def get_len(chat_id):
+    try:
+        lib = await music.load(bot, chat_id, WORK_DIR)
+        v = int(lib.get("uzunlik") or DEFAULT_LEN)
+        return v if v in LEN_CHOICES else DEFAULT_LEN
+    except Exception:
+        return DEFAULT_LEN
+
+
+def len_label(sec):
+    return f"{sec // 60} daqiqa" if sec % 60 == 0 else f"{sec / 60:.1f}".replace(".", ",") + " daqiqa"
 
 
 # ---------------- Musiqa ----------------
@@ -611,7 +650,8 @@ WELCOME = (
     "3) Men hikoya matnini yozib beraman — uni o‘qib, <b>ovozli xabar</b> yuborasiz.\n"
     "4) Sahnalarni qirqib, ovozingiz bilan tayyor videoni yuboraman.\n\n"
     "🎵 Qo‘shiq (mp3) yuborsangiz, saqlab qo‘yaman va har videoga mosini o‘zim tanlayman.\n\n"
-    "Buyruqlar: /musiqa — qo‘shiqlar ro‘yxati, /kod 125 — kodni o‘zgartirish, /bekor — joriy ishni to‘xtatish."
+    "Buyruqlar: /uzunlik — video uzunligi, /musiqa — qo‘shiqlar ro‘yxati, /kod 125 — kodni o‘zgartirish, "
+    "/bekor — joriy ishni to‘xtatish."
 )
 
 
@@ -721,6 +761,29 @@ async def on_audio(m: Message):
         return await m.answer(f"«{esc(a['name'])}» — bu nima?",
                               reply_markup=kb([("🎙 Diktor ovozi", "as_voice"), ("🎵 Musiqa (saqlash)", "as_music")]))
     asyncio.create_task(add_song(m.chat.id, a))
+
+
+@dp.message(Command("uzunlik"))
+async def cmd_len(m: Message):
+    if not allowed(m.from_user.id):
+        return
+    cur = await get_len(m.chat.id)
+    await m.answer(f"⏱ Video uzunligi hozir: <b>{len_label(cur)}</b>\nKeyingi videolar uchun tanlang:",
+                   reply_markup=kb([((("✅ " if s == cur else "") + len_label(s)), f"len:{s}") for s in LEN_CHOICES]))
+
+
+@dp.callback_query(F.data.startswith("len:"))
+async def on_len(c: CallbackQuery):
+    await c.answer()
+    if not allowed(c.from_user.id):
+        return
+    sec = int(c.data.split(":", 1)[1])
+    chat_id = c.message.chat.id if c.message else c.from_user.id
+    lib = await music.load(bot, chat_id, WORK_DIR)
+    lib["uzunlik"] = sec
+    music.save_soon(bot, chat_id, delay=0.5)
+    await bot.send_message(chat_id, f"✅ Endi videolar taxminan <b>{len_label(sec)}</b> bo‘ladi. "
+                                    "Hozirgi kino uchun ham kerak bo‘lsa, «🔄 Boshqa matn» ni bosing.")
 
 
 @dp.message(Command("musiqa"))
@@ -915,6 +978,7 @@ async def on_startup():
             BotCommand(command="bekor", description="Joriy ishni to‘xtatish"),
             BotCommand(command="kod", description="Kino kodini o‘zgartirish"),
             BotCommand(command="musiqa", description="Qo‘shiqlar ro‘yxati"),
+            BotCommand(command="uzunlik", description="Video uzunligi (1–3 daqiqa)"),
         ])
     except Exception as e:
         log.warning("set_my_commands: %r", e)

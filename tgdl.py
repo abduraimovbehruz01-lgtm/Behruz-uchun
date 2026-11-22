@@ -6,6 +6,7 @@ import os
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl.types import DocumentAttributeVideo
 
 log = logging.getLogger("tgdl")
 
@@ -82,3 +83,16 @@ class BigFiles:
         finally:
             os.close(fd)
         return size
+
+    async def send_video(self, chat_id, path, duration, w, h, caption=None, hint_msg_id=None):
+        """50 MB dan katta videoni MTProto orqali yuboradi (2 GB gacha)."""
+        c = await self.client()
+        try:
+            entity = await c.get_input_entity(chat_id)
+        except Exception:
+            if hint_msg_id:
+                await c.get_messages(None, ids=hint_msg_id)  # foydalanuvchini keshga oladi
+            entity = await c.get_input_entity(chat_id)
+        await c.send_file(entity, path, caption=caption, supports_streaming=True,
+                          attributes=[DocumentAttributeVideo(duration=int(duration), w=int(w), h=int(h),
+                                                             supports_streaming=True)])

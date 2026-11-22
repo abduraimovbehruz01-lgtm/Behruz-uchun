@@ -60,6 +60,15 @@ def _parse_json(text):
 SCENE_SCHEMA = {
     "type": "OBJECT",
     "properties": {
+        "qisqacha": {"type": "STRING"},
+        "qahramonlar": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {"ism": {"type": "STRING"}, "kim": {"type": "STRING"}},
+                "required": ["ism", "kim"],
+            },
+        },
         "lahzalar": {
             "type": "ARRAY",
             "items": {
@@ -73,7 +82,7 @@ SCENE_SCHEMA = {
             },
         }
     },
-    "required": ["lahzalar"],
+    "required": ["qisqacha", "qahramonlar", "lahzalar"],
 }
 
 SCRIPT_SCHEMA = {
@@ -104,50 +113,61 @@ def scene_prompt(name, k, n, start, length):
     return (
         f"This audio is {part} soundtrack of the movie «{name}». "
         f"It covers movie time {fmt_ts(start)} – {fmt_ts(start + length)}.\n"
-        "Listen carefully to the dialogue, sound effects and music, and list the key plot moments of this audio "
-        "in chronological order. For each moment give:\n"
-        "- \"vaqt\": timestamp FROM THE START OF THIS AUDIO FILE, format H:MM:SS;\n"
-        "- \"voqea\": 1–2 sentences in Uzbek (Latin script) — who does what, what happens, the emotion; "
-        "use character names when they are said;\n"
-        "- \"kuchli\": true if the moment is especially dramatic, scary, emotional or action-packed "
-        "(good for a trailer-like edit).\n"
-        "Give roughly one moment every 2–3 minutes, more where the action is dense. Skip the opening logos and "
-        "the end credits. Do not invent anything that is not in the audio; if speech is unclear, describe by sounds."
+        "Listen carefully to the dialogue, sound effects and music. Answer in Uzbek (Latin script):\n"
+        "- \"qisqacha\": 3–5 sentences: what happens in this part — where, who, what the conflict is and how it develops;\n"
+        "- \"qahramonlar\": the main characters who appear: \"ism\" (name as said in the movie) and \"kim\" "
+        "(who they are, 3–8 words: role, job, relation to others, e.g. «bosh qahramon, yosh qiz», «Rubining asrab olgan onasi»);\n"
+        "- \"lahzalar\": the key plot moments in chronological order, roughly one every 1–2 minutes (more where the "
+        "action is dense). For each: \"vaqt\" — timestamp FROM THE START OF THIS AUDIO FILE (H:MM:SS); \"voqea\" — "
+        "1–2 clear sentences: who does what, why, and what changes; \"kuchli\" — true if especially dramatic, scary, "
+        "emotional or action-packed.\n"
+        "Skip the opening logos and the end credits. Do not invent anything that is not in the audio; if speech is "
+        "unclear, describe by sounds and tone."
     )
 
 
-def script_prompt(name, duration, moments, variant=0):
+def script_prompt(name, duration, moments, variant=0, target_sec=120, summary="", characters=None):
     lines = "\n".join(
         f"{fmt_ts(m['t'])} — {m['voqea']}" + (" [KUCHLI]" if m.get("kuchli") else "") for m in moments
     )
+    chars = "\n".join(f"- {c['ism']}: {c['kim']}" for c in (characters or [])[:25])
+    words = int(round(target_sec * 2.0))
+    w_lo, w_hi = int(words * 0.9), int(words * 1.1)
+    s_lo, s_hi = max(6, round(words / 14)), max(9, round(words / 10))
     extra = "\nWrite a NEW version that differs from earlier ones (another hook and wording)." if variant else ""
     return (
         "You write viral Uzbek Instagram Reels movie recaps («kino qisqacha mazmuni»).\n"
         f"Movie: «{name}», length {fmt_ts(duration)}.\n"
-        "Key moments of the movie with timestamps (movie time):\n"
+        + (f"Summary of the movie:\n{summary}\n" if summary else "")
+        + (f"Main characters:\n{chars}\n" if chars else "")
+        + "Key moments of the movie with timestamps (movie time):\n"
         f"{lines}\n\n"
-        "Write a narration script in Uzbek (Latin script; lively spoken but correct literary Uzbek; "
-        "write o‘ and g‘ with the ‘ sign) that a narrator will read aloud in about 55 seconds "
-        "(110–130 words in total).\n"
+        "Write a narration script in Uzbek (Latin script; lively spoken but correct literary Uzbek; write o‘ and g‘ "
+        f"with the ‘ sign) that a narrator will read aloud in about {int(target_sec)} seconds ({w_lo}–{w_hi} words "
+        "in total).\n"
         "Rules:\n"
-        "- 8–11 short sentences, each 6–16 words, easy to read aloud.\n"
-        "- Sentence 1 is a strong hook that makes the viewer keep watching (an intriguing question, a shocking "
-        "fact, or the most gripping moment).\n"
-        "- Then retell the story in chronological order, in the present tense, simply and vividly; use the "
-        "characters' names if known.\n"
+        f"- {s_lo}–{s_hi} sentences, each 6–18 words, easy to read aloud.\n"
+        "- Sentence 1 is a strong hook that makes the viewer keep watching (an intriguing question, a shocking fact, "
+        "or the most gripping moment).\n"
+        "- The viewer has NEVER seen this movie and must fully understand the story: right after the hook make clear "
+        "where it happens and who the main hero is; introduce every character the first time with who they are "
+        "(e.g. «Rubining asrab olgan onasi Karla», «maxfiy tashkilot UNIT rahbari Keyt»); explain the main conflict; "
+        "connect events with cause and effect (chunki, shuning uchun, ammo, keyin); never leave a name, place, "
+        "organization or term unexplained; one idea per sentence.\n"
+        "- After the hook retell the story in chronological order, in the present tense, simply and vividly.\n"
         "- Do NOT reveal the ending: stop at the most intense moment and leave intrigue (cliffhanger).\n"
         "- NEVER say the movie's title (in any language) in the narration — viewers must not learn which movie it is; "
         "character names are fine.\n"
         "- No greetings, no call to action, no hashtags, no emojis — an ending phrase will be added automatically.\n"
         "- For every sentence give \"boshlanish\" and \"tugash\" (H:MM:SS, movie time): the part of the movie "
-        "whose scenes best illustrate that sentence, 8–40 seconds long, taken from the moments above. "
+        "whose scenes best illustrate that sentence, 6–30 seconds long, taken from the moments above. "
         "Sentence 1 may use the most dramatic moment of the film.\n"
         "- \"nomi\": the movie title as Uzbek viewers know it (for internal use only).\n"
-        "- \"izoh\": an intriguing Instagram caption in Uzbek, 2–3 short sentences, 1–2 fitting emojis allowed, that makes "
-        "people want to watch. It must NOT contain the movie title, the year, actor names or anything that reveals which "
-        "movie it is; no hashtags here.\n"
-        "- \"heshteglar\": 10–14 popular hashtags for this video (genre and mood, in Uzbek and English, e.g. #qorqinchli "
-        "#horror #triller #drama). No hashtags with the movie title, actors or year."
+        "- \"izoh\": an intriguing Instagram caption in Uzbek, 2–3 short sentences, 1–2 fitting emojis allowed, that "
+        "makes people want to watch. It must NOT contain the movie title, the year, actor names or anything that "
+        "reveals which movie it is; no hashtags here.\n"
+        "- \"heshteglar\": 10–14 popular hashtags for this video (genre and mood, in Uzbek and English, e.g. "
+        "#qorqinchli #horror #triller #drama). No hashtags with the movie title, actors or year."
         f"{extra}"
     )
 
@@ -241,9 +261,28 @@ class Gemini:
             raise GeminiError(0, f"javob bo‘sh ({cand.get('finishReason')})")
         return text
 
-    async def generate_json(self, session, parts, schema, temperature=0.7, timeout=480):
+    async def generate_json(self, session, parts, schema, temperature=0.7, timeout=480, prefer_strong=False,
+                            budget=900):
+        """Modellarni navbat bilan sinaydi. prefer_strong=True bo'lsa, kuchli modellar band (503/429) bo'lganda
+        biroz kutib ularni yana bir bor sinaydi va faqat keyin yengil (lite) modelga o'tadi — sifat uchun."""
         errors = []
-        for model in self._order():
+        order = self._order()
+        if prefer_strong:
+            strong = [m for m in order if "lite" not in m]
+            lite = [m for m in order if "lite" in m]
+            plan = strong + ["…"] + strong + lite
+        else:
+            plan = order
+        t_start = time.time()
+        tried_busy = set()
+        for model in plan:
+            if model == "…":
+                if not tried_busy or time.time() - t_start > budget * 0.6:
+                    continue
+                await asyncio.sleep(20)
+                continue
+            if prefer_strong and model in tried_busy and time.time() - t_start > budget * 0.6:
+                continue
             t0 = time.time()
             try:
                 data = _parse_json(await self._call(session, model, parts, schema, temperature, timeout))
@@ -251,15 +290,18 @@ class Gemini:
                 log.info("gemini ok: %s %.0fs", model, time.time() - t0)
                 return data
             except GeminiError as e:
-                log.warning("gemini %s xato: %s %s", model, e.status, e)
+                log.warning("gemini %s xato: %s %s", model, e.status, str(e)[:200])
                 errors.append(f"{model}: {e.status} {str(e)[:120]}")
                 if e.status in (401, 403) and "PERMISSION" not in str(e).upper():
                     break  # kalit noto'g'ri — boshqa modelni sinash befoyda
                 if e.status == 404:
                     self.dead[model] = time.time() + 6 * 3600
+                if e.status in (429, 500, 502, 503, 504):
+                    tried_busy.add(model)
             except (asyncio.TimeoutError, aiohttp.ClientError, ValueError, KeyError) as e:
                 log.warning("gemini %s: %r", model, e)
                 errors.append(f"{model}: {type(e).__name__}")
+                tried_busy.add(model)
         raise GeminiError(0, "; ".join(errors)[-700:] or "modellar javob bermadi")
 
     async def scene_log(self, session, audio_path, mime, name, k, n, start, length):
@@ -269,7 +311,7 @@ class Gemini:
                 {"file_data": {"mime_type": info.get("mimeType") or mime, "file_uri": info["uri"]}},
                 {"text": scene_prompt(name, k, n, start, length)},
             ]
-            data = await self.generate_json(session, parts, SCENE_SCHEMA, temperature=0.3)
+            data = await self.generate_json(session, parts, SCENE_SCHEMA, temperature=0.3, prefer_strong=True)
         finally:
             await self.delete(session, info.get("name"))
         raw = []
@@ -285,9 +327,12 @@ class Gemini:
             mt = t if absolute else start + t
             if start - 30 <= mt <= start + length + 30:
                 res.append({"t": mt, "voqea": text, "kuchli": strong})
-        return res
+        chars = [{"ism": str(c.get("ism", "")).strip(), "kim": str(c.get("kim", "")).strip()}
+                 for c in (data.get("qahramonlar") or []) if str(c.get("ism", "")).strip()]
+        return {"moments": res, "summary": str(data.get("qisqacha") or "").strip(), "characters": chars}
 
-    async def write_script(self, session, name, duration, moments, variant=0):
-        parts = [{"text": script_prompt(name, duration, moments, variant)}]
+    async def write_script(self, session, name, duration, moments, variant=0, target_sec=120, summary="",
+                           characters=None):
+        parts = [{"text": script_prompt(name, duration, moments, variant, target_sec, summary, characters)}]
         return await self.generate_json(session, parts, SCRIPT_SCHEMA, temperature=0.9 if variant else 0.75,
-                                        timeout=240)
+                                        timeout=300, prefer_strong=True)
