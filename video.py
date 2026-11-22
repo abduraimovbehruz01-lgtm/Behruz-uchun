@@ -203,6 +203,29 @@ async def choose_start(movie, t, d, duration, used, min_luma=14.0):
 
 # ---------------- Ovozni gaplarga bo'lish ----------------
 
+async def audio_duration(path):
+    try:
+        out, _ = await run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",
+                            "default=nw=1:nk=1", path], timeout=60)
+        return float(out.decode().strip() or 0)
+    except (FFError, ValueError):
+        return 0.0
+
+
+async def concat_voice(parts, out, gap=0.4):
+    """Bir nechta ovozli xabarni bitta faylga birlashtiradi (orasida qisqa pauza)."""
+    n = len(parts)
+    cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y"]
+    for p in parts:
+        cmd += ["-i", p]
+    fc = "".join(f"[{i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=mono,apad=pad_dur={gap}[a{i}];"
+                 for i in range(n))
+    fc += "".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[out]"
+    cmd += ["-filter_complex", fc, "-map", "[out]", "-c:a", "libopus", "-b:a", "64k", out]
+    await run(cmd, timeout=600)
+    return out
+
+
 async def voice_to_wav(src, dst):
     await run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000",
                "-c:a", "pcm_s16le", dst], timeout=600)
