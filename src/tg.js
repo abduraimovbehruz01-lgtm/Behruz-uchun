@@ -4,13 +4,18 @@
 const http = require('http');
 const https = require('https');
 const dns = require('dns');
+const tls = require('tls');
 const crypto = require('crypto');
 const cfg = require('./config');
 const { sleep } = require('./util');
 
 try { dns.setDefaultResultOrder('ipv4first'); } catch (e) { /* eski Node */ }
+// Yangi Node versiyalari TLS salomida juda katta (post-kvant) kalit yuboradi;
+// ba’zi tarmoqlarda bunday ulanish osilib qoladi. Klassik egri chiziqlardan foydalanamiz.
+const CURVES = 'X25519:P-256:P-384';
+try { tls.DEFAULT_ECDH_CURVE = CURVES; } catch (e) { /* jim */ }
 
-const agentHttps = new https.Agent({ keepAlive: true, maxSockets: 25, family: 4 });
+const agentHttps = new https.Agent({ keepAlive: true, maxSockets: 25, family: 4, ecdhCurve: CURVES });
 const agentHttp = new http.Agent({ keepAlive: true, maxSockets: 25 });
 
 function request(urlStr, { method = 'GET', headers = {}, body = null, timeout = 30000 } = {}) {

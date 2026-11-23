@@ -52,6 +52,20 @@ const server = http.createServer((req, res) => {
   res.end(statusPage());
 });
 
+// Tarmoqni tekshirish: Telegram serveriga TCP va TLS ulanish
+function probe(label, curve) {
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    const done = (r) => { resolve(`${label}: ${r}`); try { sock.destroy(); } catch (e) { /* jim */ } };
+    const opts = { host: 'api.telegram.org', port: 443, family: 4 };
+    const sock = curve
+      ? require('tls').connect({ ...opts, servername: 'api.telegram.org', ecdhCurve: curve }, () => done(`ok ${Date.now() - t0}ms`))
+      : require('net').connect(opts, () => done(`ok ${Date.now() - t0}ms`));
+    sock.setTimeout(8000, () => done('vaqt tugadi'));
+    sock.on('error', (e) => done(e.message));
+  });
+}
+
 async function polling() {
   await tg.quiet('deleteWebhook', { drop_pending_updates: false });
   console.log('[bot] polling rejimi (PUBLIC_URL yo‘q)');
@@ -76,9 +90,10 @@ async function main() {
   }
   try {
     const addrs = await require('dns').promises.lookup('api.telegram.org', { all: true });
-    console.log(`[tarmoq] api.telegram.org: ${addrs.map((a) => a.address).join(', ')}`);
+    console.log(`[tarmoq] Node ${process.version}, api.telegram.org: ${addrs.map((a) => a.address).join(', ')}`);
+    console.log(`[tarmoq] ${await probe('tcp')} | ${await probe('tls-klassik', 'X25519:P-256:P-384')} | ${await probe('tls-auto', 'auto')}`);
   } catch (e) {
-    console.warn(`[tarmoq] DNS xatosi: ${e.message}`);
+    console.warn(`[tarmoq] tekshiruv xatosi: ${e.message}`);
   }
   // Telegram bilan aloqa tiklanmaguncha qayta urinamiz
   for (let i = 0; ; i += 1) {
