@@ -80,7 +80,17 @@ async function netDiag() {
       sock.write(`GET ${path} HTTP/1.1\r\nHost: api.telegram.org\r\nConnection: close\r\n\r\n`);
     });
     let buf = '';
-    sock.on('data', (d) => { buf += d.toString(); if (buf.includes('\r\n\r\n')) { resolve(buf.split('\r\n')[0]); sock.destroy(); } });
+    sock.on('data', (d) => { buf += d.toString(); });
+    sock.on('end', () => resolve(buf.replace(/\r\n/g, ' ').replace(cfg.BOT_TOKEN, 'TOKEN').slice(0, 400)));
+    sock.on('error', reject);
+  });
+  const rawPost = () => new Promise((resolve, reject) => {
+    const sock = tlsm.connect({ host: 'api.telegram.org', port: 443, servername: 'api.telegram.org', family: 4 }, () => {
+      sock.write(`POST ${path} HTTP/1.1\r\nHost: api.telegram.org\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}`);
+    });
+    let buf = '';
+    sock.on('data', (d) => { buf += d.toString(); });
+    sock.on('end', () => resolve(buf.replace(/\r\n/g, ' ').slice(-200)));
     sock.on('error', reject);
   });
   const hget = (url, opts = {}) => new Promise((resolve, reject) => {
@@ -89,6 +99,7 @@ async function netDiag() {
   });
   const results = [];
   results.push(await t('raw-get', raw));
+  results.push(await t('raw-post', rawPost));
   results.push(await t('https-get', () => hget(`https://api.telegram.org${path}`)));
   results.push(await t('https-get-ipv4', () => hget(`https://api.telegram.org${path}`, { family: 4 })));
   results.push(await t('fetch', () => fetch(`https://api.telegram.org${path}`).then((r) => `HTTP ${r.status}`)));
