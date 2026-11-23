@@ -114,6 +114,7 @@ PENDING_AUDIO: dict[int, dict] = {}   # «bu diktor ovozimi yoki musiqami?» deb
 MUSIC_SEM = asyncio.Semaphore(1)      # qo'shiqlar birma-bir tahlil qilinadi
 MUSIC_DIR = os.path.join(WORK_DIR, "music")
 GEMINI_STATUS = "tekshirilmagan"
+ELEVEN_STATUS = ""
 
 
 class Status:
@@ -323,8 +324,12 @@ async def remember_job(job):
     """Kino ma'lumotini chatdagi qadalgan faylga yozib qo'yadi — server qayta ishga tushsa, «Davom ettirish» mumkin bo'lsin."""
     try:
         lib = await music.load(bot, job.chat_id, WORK_DIR)
-        lib["job"] = {"msg_id": job.msg_id, "file_id": job.file_id, "size": job.size, "file_name": job.file_name,
-                      "name": job.name, "code": job.code, "t": int(time.time())}
+        meta = {"msg_id": job.msg_id, "file_id": job.file_id, "size": job.size, "file_name": job.file_name,
+                "name": job.name, "code": job.code, "t": int(time.time())}
+        if job.script:  # matn va lahzalar ham saqlanadi — davom ettirishda Gemini qayta ishlamaydi
+            meta.update(script=job.script, moments=job.moments, summary=job.summary, characters=job.characters,
+                        title=job.title, caption=job.caption, tags=job.tags, target_sec=job.target_sec)
+        lib["job"] = meta
         music.save_soon(bot, job.chat_id)
     except Exception as e:
         log.warning("ish ma'lumoti saqlanmadi: %r", e)
@@ -344,6 +349,11 @@ async def resume_job(uid, chat_id):
     job = Job(uid=uid, chat_id=chat_id, dir=d, msg_id=meta["msg_id"], file_id=meta.get("file_id", ""),
               size=int(meta.get("size") or 0), file_name=meta.get("file_name") or "kino.mp4",
               name=meta.get("name"), code=meta.get("code"))
+    if meta.get("script"):
+        job.script, job.moments = meta["script"], meta.get("moments") or []
+        job.summary, job.characters = meta.get("summary") or "", meta.get("characters") or []
+        job.title, job.caption, job.tags = meta.get("title") or "", meta.get("caption") or "", meta.get("tags") or []
+        job.target_sec = int(meta.get("target_sec") or DEFAULT_LEN)
     JOBS[uid] = job
     sm = await bot.send_message(chat_id, f"🔁 Davom ettiryapman: kinoni qaytadan yuklab olyapman ({human_mb(job.size)})…")
     job.status = Status(chat_id, sm.message_id)
@@ -415,8 +425,8 @@ async def analyse(job):
             if not job.has_audio:
                 raise RuntimeError("Kinoda ovoz yo‘lagi yo‘q — Gemini voqealarni eshita olmaydi")
         job.last = time.time()
-        if not job.chunks:
-            await st.set("🎧 Kinoning ovozi ajratilmoqda…", force=True)
+        if not job.chunks and not job.moments:
+            await st.set("🎧 Kinoning ovozi ajratilmoqda… (bepul serverda 5–10 daqiqa)", force=True)
             async with HEAVY:
                 job.chunks = await video.extract_audio_chunks(job.movie, job.dir, job.duration)
         if not await wait_for(lambda: job.name, 1800):
@@ -443,13 +453,15 @@ async def analyse(job):
                     os.remove(cpath)  # diskni bo'shatish: lahzalar topildi, ovoz bo'laklari endi kerak emas
                 except OSError:
                     pass
-        await st.set("✍️ Hikoya matni yozilmoqda…", force=True)
-        if not job.code:
-            await wait_for(lambda: job.code, 1800)
-        job.target_sec = await get_len(job.chat_id)
-        res = await write_checked(job)
-        job.script = build_script(job, res)
+        if not job.script:
+            await st.set("✍️ Hikoya matni yozilmoqda…", force=True)
+            if not job.code:
+                await wait_for(lambda: job.code, 1800)
+            job.target_sec = await get_len(job.chat_id)
+            res = await write_checked(job)
+            job.script = build_script(job, res)
         job.last = time.time()
+        asyncio.create_task(remember_job(job))
         await st.set("✅ Matn tayyor! Pastda 👇", force=True)
         await send_script(job)
     except asyncio.CancelledError:
@@ -479,6 +491,7 @@ async def regen(job):
         job.target_sec = await get_len(job.chat_id)
         res = await write_checked(job)
         job.script = build_script(job, res)
+        asyncio.create_task(remember_job(job))
         await st.delete()
         await send_script(job)
     except asyncio.CancelledError:
@@ -806,6 +819,7 @@ async def tts_job(job):
             job.task = asyncio.create_task(render(job))
     except eleven.ElevenError as e:
         job.busy = None
+        log.warning("elevenlabs xato: %s %s %s", e.status, e.code, e)
         await st.set(f"❌ ElevenLabs: {esc(eleven.friendly(e))}", force=True)
     except Exception as e:
         job.busy = None
@@ -837,6 +851,8 @@ async def cmd_start(m: Message):
         warn.append(f"⚠️ Gemini: {esc(GEMINI_STATUS)}")
     if not BIG:
         warn.append("⚠️ API_ID/API_HASH kiritilmagan — 20 MB dan katta fayllar olinmaydi")
+    if ELEVEN_KEY and not ELEVEN_STATUS.startswith("ishlaydi"):
+        warn.append(f"⚠️ ElevenLabs: {esc(ELEVEN_STATUS)}")
     await m.answer(WELCOME + f"\n\nSizning ID: <code>{m.from_user.id}</code>" + ("\n\n" + "\n".join(warn) if warn else ""))
 
 
@@ -1019,6 +1035,7 @@ async def on_text(m: Message):
         if len(sentences) < 2:
             return await m.answer("Matnni kamida 2 ta gap qilib yuboring.")
         job.script = remap_script(job, sentences)
+        asyncio.create_task(remember_job(job))
         return await m.answer("✅ Matn yangilandi. Endi shu matnni o‘qib, ovozli xabar yuboring 🎙")
     await m.answer("⏳ Ishlayapman, biroz kuting…")
 
@@ -1226,11 +1243,15 @@ async def check_gemini():
 
 
 async def on_startup():
-    global HTTP
+    global HTTP, ELEVEN_STATUS
     os.makedirs(WORK_DIR, exist_ok=True)
     HTTP = aiohttp.ClientSession()
     asyncio.create_task(keepalive())
     await check_gemini()
+    if ELEVEN_KEY:
+        ok, info = await eleven.check(HTTP, ELEVEN_KEY)
+        ELEVEN_STATUS = ("ishlaydi ✅ " if ok else "xato: ") + info
+        log.info("ElevenLabs: %s", ELEVEN_STATUS)
     try:
         await bot.set_my_commands([
             BotCommand(command="start", description="Yo‘riqnoma"),

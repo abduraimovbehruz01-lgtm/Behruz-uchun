@@ -33,25 +33,54 @@ def voice_name(voice_id):
 
 
 def friendly(e):
-    """Xatoni oddiy tilda tushuntiradi."""
+    """Xatoni oddiy tilda tushuntiradi (oxirida ElevenLabs aytgan aniq sabab)."""
     s = f"{e.code} {e}".lower()
-    if "quota" in s or "credit" in s or "insufficient" in s:
-        return "ElevenLabs kreditlari tugagan yoki yetmayapti."
-    if "voice_not_found" in s or "voice not found" in s or e.status == 404:
-        return ("bu ovoz hisobingizda yo‘q. ElevenLabs’da Voice Library’dan shu ovozni topib, «Add to My Voices» ni "
-                "bosing yoki /ovoz bilan boshqasini tanlang.")
-    if e.status == 401 or "invalid_api_key" in s or "unauthorized" in s:
-        return "API kalit noto‘g‘ri yoki unga Text to Speech ruxsati berilmagan."
-    if e.status == 429 or "too_many" in s or "busy" in s:
-        return "ElevenLabs hozir band. Birozdan keyin qayta urinib ko‘ring."
-    return str(e)[:200]
+    if "unusual_activity" in s or "free tier usage disabled" in s:
+        txt = ("ElevenLabs bepul (Free) hisobni serverdan ishlatishni blokladi. Pullik tarif (Starter) kerak yoki "
+               "ovozni ElevenLabs saytida yasab, mp3 ni botga yuboring.")
+    elif "free_users_not_allowed" in s or "library voices" in s:
+        txt = "bepul tarifda Voice Library ovozlarini API orqali ishlatib bo‘lmaydi — pullik tarif kerak."
+    elif "missing_permissions" in s or "permission" in s:
+        txt = "kalitga kerakli ruxsat berilmagan: API Keys → kalit → Text to Speech: Access ni yoqing."
+    elif "quota" in s or "credit" in s or "insufficient" in s:
+        txt = "ElevenLabs kreditlari tugagan yoki yetmayapti."
+    elif "voice_not_found" in s or "voice not found" in s or e.status == 404:
+        txt = ("bu ovoz hisobingizda yo‘q: ElevenLabs’da Voice Library’dan shu ovozni topib «Add to My Voices» ni "
+               "bosing yoki /ovoz bilan boshqasini tanlang.")
+    elif "invalid_api_key" in s or "invalid api key" in s:
+        txt = "API kalit noto‘g‘ri."
+    elif e.status == 429 or "too_many" in s or "busy" in s:
+        txt = "ElevenLabs hozir band. Birozdan keyin qayta urinib ko‘ring."
+    elif e.status == 401:
+        txt = "ElevenLabs kirishga ruxsat bermadi."
+    else:
+        txt = "kutilmagan xato."
+    raw = (e.code or str(e) or "").strip()
+    return f"{txt}\n(ElevenLabs javobi: {e.status} {raw[:160]})"
+
+
+async def check(session, key):
+    """Kalit ishlashini tekshiradi. Qaytaradi: (True, "tarif, qolgan kredit") yoki (False, sabab)."""
+    try:
+        async with session.get(f"{BASE}/v1/user/subscription", headers={"xi-api-key": key},
+                               timeout=aiohttp.ClientTimeout(total=30)) as r:
+            txt = await r.text()
+            if r.status == 200:
+                j = json.loads(txt)
+                left = int(j.get("character_limit", 0)) - int(j.get("character_count", 0))
+                return True, f"tarif: {j.get('tier', '?')}, kredit: {left}"
+            msg, code = _detail(txt)
+            return False, f"{r.status} {code} {msg}"[:200]
+    except Exception as ex:
+        return False, repr(ex)[:200]
 
 
 def _detail(txt):
     try:
         d = json.loads(txt).get("detail")
         if isinstance(d, dict):
-            return d.get("message") or d.get("status") or str(d), d.get("status") or d.get("code") or ""
+            code = d.get("status") or d.get("code") or ""
+            return d.get("message") or code or str(d), f"{code}: {d.get('message', '')}" if code else ""
         return str(d), ""
     except (ValueError, AttributeError):
         return re.sub(r"\s+", " ", txt)[:200], ""
