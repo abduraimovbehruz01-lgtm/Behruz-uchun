@@ -112,6 +112,7 @@ async function netDiag() {
     r.end(body);
   });
   const results = [];
+  results.push(await t('boshqa-token', () => hget('https://api.telegram.org/bot123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/getMe', { family: 4 })));
   results.push(await t('https-get', () => hget(`https://api.telegram.org${path}`)));
   results.push(await t('https-post', () => hpost(`https://api.telegram.org${path}`)));
   results.push(await t('getWebhookInfo', () => hget(`https://api.telegram.org/bot${cfg.BOT_TOKEN}/getWebhookInfo`, { family: 4 })));
