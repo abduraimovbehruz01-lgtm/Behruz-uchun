@@ -10,7 +10,7 @@ Telegram bot: kinoni yuborasiz → bot 1 daqiqalik o‘zbekcha hikoya matnini yo
 4. Hikoya eng qiziq joyida to‘xtaydi. Oxirida bot yoki kod aytilmaydi: kod butun video davomida pastda yoziladi.
 5. Siz matnni o‘qib, ovozli xabar yuborasiz. Har gapdan keyin bir lahza to‘xtasangiz, sahnalar aniqroq mos tushadi.
 6. Bot har gapga mos sahnalarni oladi: har biri ~2 soniya, boshida tezroq almashadi, sahna almashgan joydan boshlanadi.
-7. Video namunadek bo‘ladi: kvadrat 1080×1080 (720p kinodan 720×720), yengil kino rangi va vinyetka. Eng pastda «Kino kodi: 125» (anime bo‘lsa «Anime kodi: 125»), uning tepasida `BehruzFilm`. Kino yoki animeligini Gemini o‘zi aniqlaydi, matn tagidagi «🏷 … 🔁» tugmasi bilan almashtirsa bo‘ladi.
+7. Video namunadek bo‘ladi: kvadrat 1080×1080 (720p kinodan 720×720), yengil kino rangi va vinyetka. Eng pastda «Kino kodi: 125» (anime bo‘lsa «Anime kodi: 125»). Kino yoki animeligini Gemini o‘zi aniqlaydi, matn tagidagi «🏷 … 🔁» tugmasi bilan almashtirsa bo‘ladi.
 8. Ovoz aralashtiriladi: sizning ovozingiz baland, kinoning ovozi orqada past eshitiladi, siz gapirganda yanada pasayadi. Balandlik Instagram me’yoriga (−14 LUFS) keltiriladi.
 9. Tayyor videoni yuboradi. «📐 9:16» tugmasi Reels uchun vertikal variantini yasaydi.
 
@@ -24,7 +24,7 @@ Matn tagidagi yoki tayyor video tagidagi «🎵 Oddiy video» tugmasi:
 
 1. Gemini kinoning eng qiziq uzluksiz sahnasini tanlaydi: 45–120 soniya (uzunligini sahnaning o‘ziga qarab), oxirini oshkor qilmaydi, kino boshidagi logotiplar va oxiridagi qismdan olmaydi.
 2. Sahna atrofidagi ovozni eshitib, aniq boshi va oxirini topadi: gap o‘rtasida boshlanmaydi va tugamaydi. Kesish joyi kadr almashgan, jim nuqtaga yopishtiriladi.
-3. Video effektsiz: rang berilmaydi, vinyetka yo‘q, kino qanday bo‘lsa shunday (kvadrat qilib qirqiladi). Pastda «Kino kodi: 125» (yoki «Anime kodi») va `BehruzFilm`.
+3. Video effektsiz: rang berilmaydi, vinyetka yo‘q, kino qanday bo‘lsa shunday (kvadrat qilib qirqiladi). Pastda «Kino kodi: 125» (yoki «Anime kodi»).
 4. Ovoz: kinoning o‘z ovozi baland, kutubxonadan mos qo‘shiq orqada past (eng qiziq joyidan boshlanadi). Kino ovozi baland joylarda qo‘shiq biroz pasayadi.
 5. Instagram uchun alohida tavsif shu sahnaga qarab yoziladi.
 
@@ -38,7 +38,7 @@ Tugmalar: «🎞 Boshqa sahna», «🎵 Boshqa qo‘shiq», «🔇 Qo‘shiqsiz�
 | `API_ID`, `API_HASH` | my.telegram.org → API development tools. 20 MB dan katta fayllar uchun | ha |
 | `GEMINI_API_KEY` | aistudio.google.com kaliti | ha |
 | `OWNER_IDS` | Botdan faqat shu Telegram ID lar foydalanadi (vergul bilan) | tavsiya |
-| `WATERMARK` | Videodagi yozuv (standart `BehruzFilm`) | yo‘q |
+| `WATERMARK` | Kod ustidagi qo‘shimcha yozuv, masalan `BehruzFilm` (standart: yo‘q; `-` — o‘chirilgan) | yo‘q |
 | `VIDEO_SIZE` | Eng katta o‘lcham (standart 1080) | yo‘q |
 | `VIDEO_LEN` | Standart uzunlik, soniya (120) | yo‘q |
 | `CODE_LABEL_KINO`, `CODE_LABEL_ANIME` | Pastdagi yozuv (standart «Kino kodi: {kod}», «Anime kodi: {kod}») | yo‘q |

@@ -37,7 +37,9 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "").strip() or None
 ELEVEN_KEY = os.environ.get("ELEVEN_API_KEY", "").strip()
 OWNER_IDS = {int(x) for x in re.findall(r"\d+", os.environ.get("OWNER_IDS", ""))}
-WATERMARK = os.environ.get("WATERMARK", "BehruzFilm").strip()
+WATERMARK = os.environ.get("WATERMARK", "").strip()  # videodagi qo'shimcha yozuv (standart: yo'q)
+if WATERMARK.lower() in ("-", "0", "off", "none", "yoq", "yo'q", "yo‘q"):
+    WATERMARK = ""
 CTA_TEXT = os.environ.get("CTA_TEXT", "Kinoni ko‘rmoqchi bo‘lsangiz, profilimdagi botga {kod} kodini yuboring.")
 CTA_LINE1 = os.environ.get("CTA_LINE1", "@behruzfilmbot").strip()
 CAPTION_CTA = os.environ.get("CAPTION_CTA", "🔢 Kod: {kod} — kinoni ko‘rish uchun profilimdagi botga yuboring 🍿")
@@ -361,7 +363,10 @@ async def remember_job(job):
         if job.script:  # matn va lahzalar ham saqlanadi — davom ettirishda Gemini qayta ishlamaydi
             meta.update(script=job.script, moments=job.moments, summary=job.summary, characters=job.characters,
                         title=job.title, caption=job.caption, tags=job.tags, target_sec=job.target_sec,
-                        kind=job.kind, kind_manual=job.kind_manual)
+                        kind=job.kind, kind_manual=job.kind_manual, music_id=job.music_id, no_music=job.no_music)
+            if job.plain.get("cands"):  # oddiy video sahnalari — qayta ishga tushsa ham o'sha sahna qoladi
+                meta["plain"] = {"cands": job.plain["cands"], "idx": job.plain.get("idx", -1),
+                                 "used": [list(x) for x in job.plain.get("used", [])]}
         lib["job"] = meta
         music.save_soon(bot, job.chat_id)
     except Exception as e:
@@ -388,6 +393,11 @@ async def resume_job(uid, chat_id):
         job.title, job.caption, job.tags = meta.get("title") or "", meta.get("caption") or "", meta.get("tags") or []
         job.target_sec = int(meta.get("target_sec") or DEFAULT_LEN)
         job.kind, job.kind_manual = meta.get("kind") or "kino", bool(meta.get("kind_manual"))
+        job.music_id, job.no_music = meta.get("music_id"), bool(meta.get("no_music"))
+        pl = meta.get("plain") or {}
+        if pl.get("cands"):
+            job.plain.update(cands=pl["cands"], idx=int(pl.get("idx", -1)),
+                             used=[tuple(x) for x in pl.get("used") or []])
         if not SPOKEN_CTA:
             job.script = [x for x in job.script if not x.get("cta")] or job.script
     JOBS[uid] = job
@@ -409,7 +419,7 @@ async def ask_next(job):
         await bot.send_message(job.chat_id, "🎬 Kino nomini yozing.\nMasalan: <i>Pet Sematary 2019</i>")
     elif not job.code:
         job.asking = "code"
-        await bot.send_message(job.chat_id, f"🔢 Kino kodini yozing ({esc(WATERMARK)} uchun).\nMasalan: <i>125</i>")
+        await bot.send_message(job.chat_id, "🔢 Kino kodini yozing (videoning pastida chiqadi).\nMasalan: <i>125</i>")
     else:
         job.asking = None
 
@@ -799,7 +809,11 @@ async def plain_job(job, new=False):
         p["cands"], p["idx"] = cands, idx
         cand = cands[idx]
         await st.set(f"🎞 Sahna: {esc(cand.get('nima') or '')}\n✂️ Aniq boshlanishi va oxiri aniqlanmoqda…", force=True)
-        start, end = await refine_bounds(job, cand)
+        if cand.get("exact"):  # avval aniqlangan (masalan, qayta ishga tushgandan keyin) — o'sha chegaralar
+            start, end = float(cand["exact"][0]), float(cand["exact"][1])
+        else:
+            start, end = await refine_bounds(job, cand)
+            cand["exact"] = [start, end]
         p.setdefault("used", []).append((start, end))
         fps = video.FPS
         total_frames = int((end - start) * fps)
@@ -826,6 +840,7 @@ async def plain_job(job, new=False):
             log.info("oddiy video: %.1f–%.1f (%.1fs), %.0fs", start, end, total, time.time() - t0)
         p.update(concat=cv, bg=cb, total=total, scene=(start, end), nima=cand.get("nima") or "",
                  izoh=hide_title(cand.get("izoh") or "", job), square=None)
+        asyncio.create_task(remember_job(job))
         await finish_plain(job, job.layout, st)
     except asyncio.CancelledError:
         try:
