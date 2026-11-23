@@ -6,7 +6,7 @@ const enabled = () => !!cfg.GEMINI_API_KEY;
 let workingModel = null;
 
 function models() {
-  const list = [workingModel, cfg.GEMINI_MODEL, 'gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-flash-lite-latest'];
+  const list = [workingModel, cfg.GEMINI_MODEL, 'gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-flash-lite-latest'];
   return list.filter((m, i) => m && list.indexOf(m) === i);
 }
 

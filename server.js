@@ -75,14 +75,31 @@ async function main() {
     return;
   }
   try {
-    const me = await tg.call('getMe');
-    core.me.id = me.id;
-    core.me.username = me.username;
-    console.log(`[bot] @${me.username} ulandi`);
+    const addrs = await require('dns').promises.lookup('api.telegram.org', { all: true });
+    console.log(`[tarmoq] api.telegram.org: ${addrs.map((a) => a.address).join(', ')}`);
   } catch (e) {
-    startError = `Token noto‘g‘ri yoki Telegram bilan aloqa yo‘q: ${e.message}`;
-    console.error(`[bot] ${startError}`);
-    return;
+    console.warn(`[tarmoq] DNS xatosi: ${e.message}`);
+  }
+  // Telegram bilan aloqa tiklanmaguncha qayta urinamiz
+  for (let i = 0; ; i += 1) {
+    const t0 = Date.now();
+    try {
+      const me = await tg.call('getMe');
+      core.me.id = me.id;
+      core.me.username = me.username;
+      startError = '';
+      console.log(`[bot] @${me.username} ulandi (${Date.now() - t0} ms)`);
+      break;
+    } catch (e) {
+      if (e.code === 401 || e.code === 404) {
+        startError = 'BOT_TOKEN noto‘g‘ri';
+        console.error(`[bot] ${startError}: ${e.message}`);
+        return;
+      }
+      startError = `Telegram bilan aloqa yo‘q: ${e.message}`;
+      console.error(`[bot] ${startError} — qayta urinamiz`);
+      await sleep(Math.min(60000, 5000 * (i + 1)));
+    }
   }
   if (!cfg.BAZA_KANAL) console.warn('[baza] BAZA_KANAL yo‘q — ma’lumotlar faqat xotirada (server qayta yonganda yo‘qoladi)');
   await db.init();
