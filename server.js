@@ -66,6 +66,37 @@ function probe(label, curve) {
   });
 }
 
+// Batafsil tekshiruv: qaysi usulda Telegram javob beradi
+function withTimeout(p, ms) {
+  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`vaqt tugadi ${ms}ms`)), ms))]);
+}
+async function netDiag() {
+  const https = require('https');
+  const tlsm = require('tls');
+  const path = `/bot${cfg.BOT_TOKEN}/getMe`;
+  const t = (label, fn) => { const t0 = Date.now(); return withTimeout(fn(), 12000).then((r) => `${label}: ${r} (${Date.now() - t0}ms)`, (e) => `${label}: XATO ${e.message} (${Date.now() - t0}ms)`); };
+  const raw = () => new Promise((resolve, reject) => {
+    const sock = tlsm.connect({ host: 'api.telegram.org', port: 443, servername: 'api.telegram.org', family: 4 }, () => {
+      sock.write(`GET ${path} HTTP/1.1\r\nHost: api.telegram.org\r\nConnection: close\r\n\r\n`);
+    });
+    let buf = '';
+    sock.on('data', (d) => { buf += d.toString(); if (buf.includes('\r\n\r\n')) { resolve(buf.split('\r\n')[0]); sock.destroy(); } });
+    sock.on('error', reject);
+  });
+  const hget = (url, opts = {}) => new Promise((resolve, reject) => {
+    const r = https.get(url, opts, (res) => { res.resume(); resolve(`HTTP ${res.statusCode}`); });
+    r.on('error', reject);
+  });
+  const results = [];
+  results.push(await t('raw-get', raw));
+  results.push(await t('https-get', () => hget(`https://api.telegram.org${path}`)));
+  results.push(await t('https-get-ipv4', () => hget(`https://api.telegram.org${path}`, { family: 4 })));
+  results.push(await t('fetch', () => fetch(`https://api.telegram.org${path}`).then((r) => `HTTP ${r.status}`)));
+  results.push(await t('google', () => hget('https://www.google.com/')));
+  results.push(await t('tg-post', () => tg.call('getMe').then((m) => `ok @${m.username}`)));
+  console.log(`[tarmoq-batafsil] ${results.join(' | ')}`);
+}
+
 async function polling() {
   await tg.quiet('deleteWebhook', { drop_pending_updates: false });
   console.log('[bot] polling rejimi (PUBLIC_URL yo‘q)');
@@ -92,6 +123,7 @@ async function main() {
     const addrs = await require('dns').promises.lookup('api.telegram.org', { all: true });
     console.log(`[tarmoq] Node ${process.version}, api.telegram.org: ${addrs.map((a) => a.address).join(', ')}`);
     console.log(`[tarmoq] ${await probe('tcp')} | ${await probe('tls-klassik', 'X25519:P-256:P-384')} | ${await probe('tls-auto', 'auto')}`);
+    await netDiag();
   } catch (e) {
     console.warn(`[tarmoq] tekshiruv xatosi: ${e.message}`);
   }
