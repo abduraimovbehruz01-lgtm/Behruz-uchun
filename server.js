@@ -52,77 +52,6 @@ const server = http.createServer((req, res) => {
   res.end(statusPage());
 });
 
-// Tarmoqni tekshirish: Telegram serveriga TCP va TLS ulanish
-function probe(label, curve) {
-  return new Promise((resolve) => {
-    const t0 = Date.now();
-    const done = (r) => { resolve(`${label}: ${r}`); try { sock.destroy(); } catch (e) { /* jim */ } };
-    const opts = { host: 'api.telegram.org', port: 443, family: 4 };
-    const sock = curve
-      ? require('tls').connect({ ...opts, servername: 'api.telegram.org', ecdhCurve: curve }, () => done(`ok ${Date.now() - t0}ms`))
-      : require('net').connect(opts, () => done(`ok ${Date.now() - t0}ms`));
-    sock.setTimeout(8000, () => done('vaqt tugadi'));
-    sock.on('error', (e) => done(e.message));
-  });
-}
-
-// Batafsil tekshiruv: qaysi usulda Telegram javob beradi
-function withTimeout(p, ms) {
-  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`vaqt tugadi ${ms}ms`)), ms))]);
-}
-async function netDiag() {
-  const https = require('https');
-  const tlsm = require('tls');
-  const path = `/bot${cfg.BOT_TOKEN}/getMe`;
-  const t = (label, fn) => { const t0 = Date.now(); return withTimeout(fn(), 12000).then((r) => `${label}: ${r} (${Date.now() - t0}ms)`, (e) => `${label}: XATO ${e.message} (${Date.now() - t0}ms)`); };
-  const raw = () => new Promise((resolve, reject) => {
-    const sock = tlsm.connect({ host: 'api.telegram.org', port: 443, servername: 'api.telegram.org', family: 4 }, () => {
-      sock.write(`GET ${path} HTTP/1.1\r\nHost: api.telegram.org\r\nConnection: close\r\n\r\n`);
-    });
-    let buf = '';
-    sock.on('data', (d) => { buf += d.toString(); });
-    sock.on('end', () => resolve(buf.replace(/\r\n/g, ' ').replace(cfg.BOT_TOKEN, 'TOKEN').slice(0, 400)));
-    sock.on('error', reject);
-  });
-  const rawPost = () => new Promise((resolve, reject) => {
-    const sock = tlsm.connect({ host: 'api.telegram.org', port: 443, servername: 'api.telegram.org', family: 4 }, () => {
-      sock.write(`POST ${path} HTTP/1.1\r\nHost: api.telegram.org\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}`);
-    });
-    let buf = '';
-    sock.on('data', (d) => { buf += d.toString(); });
-    sock.on('end', () => resolve(buf.replace(/\r\n/g, ' ').slice(-200)));
-    sock.on('error', reject);
-  });
-  const hget = (url, opts = {}) => new Promise((resolve, reject) => {
-    const r = https.get(url, opts, (res) => {
-      let b = '';
-      res.on('data', (d) => { b += d; });
-      res.on('end', () => resolve(`HTTP ${res.statusCode} ${b.slice(0, 160)} ra=${res.headers['retry-after'] || '-'}`));
-    });
-    r.on('error', reject);
-  });
-  const hpost = (url) => new Promise((resolve, reject) => {
-    const body = Buffer.from('{}');
-    const r = https.request(url, { method: 'POST', family: 4, headers: { 'content-type': 'application/json', 'content-length': body.length } }, (res) => {
-      let b = '';
-      res.on('data', (d) => { b += d; });
-      res.on('end', () => resolve(`HTTP ${res.statusCode} ${b.slice(0, 160)}`));
-    });
-    r.on('error', reject);
-    r.end(body);
-  });
-  const results = [];
-  results.push(await t('boshqa-token', () => hget('https://api.telegram.org/bot123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/getMe', { family: 4 })));
-  results.push(await t('https-get', () => hget(`https://api.telegram.org${path}`)));
-  results.push(await t('https-post', () => hpost(`https://api.telegram.org${path}`)));
-  results.push(await t('getWebhookInfo', () => hget(`https://api.telegram.org/bot${cfg.BOT_TOKEN}/getWebhookInfo`, { family: 4 })));
-  results.push(await t('https-get-ipv4', () => hget(`https://api.telegram.org${path}`, { family: 4 })));
-  results.push(await t('fetch', () => fetch(`https://api.telegram.org${path}`).then((r) => `HTTP ${r.status}`)));
-  results.push(await t('google', () => hget('https://www.google.com/')));
-  results.push(await t('tg-post', () => tg.call('getMe').then((m) => `ok @${m.username}`)));
-  console.log(`[tarmoq-batafsil] ${results.join(' | ')}`);
-}
-
 async function polling() {
   await tg.quiet('deleteWebhook', { drop_pending_updates: false });
   console.log('[bot] polling rejimi (PUBLIC_URL yo‘q)');
@@ -145,14 +74,7 @@ async function main() {
     console.error('[server] BOT_TOKEN yo‘q — Render → Environment bo‘limiga BOT_TOKEN qo‘shing.');
     return;
   }
-  try {
-    const addrs = await require('dns').promises.lookup('api.telegram.org', { all: true });
-    console.log(`[tarmoq] Node ${process.version}, api.telegram.org: ${addrs.map((a) => a.address).join(', ')}`);
-    console.log(`[tarmoq] ${await probe('tcp')} | ${await probe('tls-klassik', 'X25519:P-256:P-384')} | ${await probe('tls-auto', 'auto')}`);
-    await netDiag();
-  } catch (e) {
-    console.warn(`[tarmoq] tekshiruv xatosi: ${e.message}`);
-  }
+  console.log(`[server] Node ${process.version}`);
   // Telegram bilan aloqa tiklanmaguncha qayta urinamiz
   for (let i = 0; ; i += 1) {
     const t0 = Date.now();
@@ -170,8 +92,9 @@ async function main() {
         return;
       }
       startError = `Telegram bilan aloqa yo‘q: ${e.message}`;
-      console.error(`[bot] ${startError} — qayta urinamiz`);
-      await sleep(Math.min(60000, 5000 * (i + 1)));
+      const wait = e.retryAfter ? (e.retryAfter + 5) * 1000 : Math.min(60000, 5000 * (i + 1));
+      console.error(`[bot] ${startError} — ${Math.round(wait / 1000)} soniyadan keyin qayta urinamiz`);
+      await sleep(wait);
     }
   }
   if (!cfg.BAZA_KANAL) console.warn('[baza] BAZA_KANAL yo‘q — ma’lumotlar faqat xotirada (server qayta yonganda yo‘qoladi)');

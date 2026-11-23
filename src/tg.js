@@ -95,7 +95,7 @@ async function call(method, params = {}, files = null) {
     try { j = JSON.parse(res.body.toString('utf8')); } catch (e) { j = { ok: false, error_code: res.status, description: `HTTP ${res.status}` }; }
     if (j.ok) return j.result;
     const ra = j.parameters && j.parameters.retry_after;
-    if (j.error_code === 429 && ra && ra <= 35 && attempt < 3) { await sleep(ra * 1000 + 300); continue; }
+    if (j.error_code === 429 && ra && ra <= 35 && attempt < 3) { await sleep(ra * 1000 + 2000); continue; }
     if (j.error_code >= 500 && attempt < 2) { await sleep(1000); continue; }
     const err = new Error(`${method}: ${j.description}`);
     err.code = j.error_code;
