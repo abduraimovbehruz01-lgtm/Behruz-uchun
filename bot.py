@@ -41,6 +41,10 @@ WATERMARK = os.environ.get("WATERMARK", "BehruzFilm").strip()
 CTA_TEXT = os.environ.get("CTA_TEXT", "Kinoni ko‘rmoqchi bo‘lsangiz, profilimdagi botga {kod} kodini yuboring.")
 CTA_LINE1 = os.environ.get("CTA_LINE1", "@behruzfilmbot").strip()
 CAPTION_CTA = os.environ.get("CAPTION_CTA", "🔢 Kod: {kod} — kinoni ko‘rish uchun profilimdagi botga yuboring 🍿")
+SPOKEN_CTA = os.environ.get("CTA_SPOKEN", "0") == "1"  # hikoya oxirida «...botga kodni yuboring» gapi (standart: yo'q)
+CODE_LABEL = {"kino": os.environ.get("CODE_LABEL_KINO", "Kino kodi: {kod}"),
+              "anime": os.environ.get("CODE_LABEL_ANIME", "Anime kodi: {kod}")}
+ANIME_TAGS = os.environ.get("ANIME_HASHTAGS", "#anime #animelar #animeuz")
 BASE_TAGS = os.environ.get("BASE_HASHTAGS", "#kino #kinolar #film #filmlar")
 PUBLIC_URL = (os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
 PORT = int(os.environ.get("PORT", "10000"))
@@ -112,6 +116,8 @@ class Job:
     last: float = field(default_factory=time.time)
     variant: int = 0
     mode: str = "story"                                # oxirgi video: "story" (hikoya) yoki "plain" (oddiy)
+    kind: str = "kino"                                 # "kino" yoki "anime" — videoning pastidagi yozuv uchun
+    kind_manual: bool = False                          # foydalanuvchi o'zi tanlagan bo'lsa, Gemini o'zgartirmaydi
     plain: dict = field(default_factory=dict)          # oddiy video: sahnalar, kesilgan video, ovoz, tayyor fayl
 
 
@@ -122,7 +128,6 @@ PART_WAIT = 120        # «1/2» kabi belgi bo'lsa, qolgan qismlarni shuncha son
 MUSIC_SEM = asyncio.Semaphore(1)      # qo'shiqlar birma-bir tahlil qilinadi
 PLAIN_MIN = int(os.environ.get("PLAIN_MIN_SEC", "45"))    # oddiy video: eng qisqasi (soniya)
 PLAIN_MAX = int(os.environ.get("PLAIN_MAX_SEC", "120"))   # oddiy video: eng uzuni (soniya)
-PLAIN_CTA_SEC = 4.5    # oddiy video oxirida shuncha soniya «@behruzfilmbot / KOD» yozuvi
 MUSIC_DIR = os.path.join(WORK_DIR, "music")
 GEMINI_STATUS = "tekshirilmagan"
 ELEVEN_STATUS = ""
@@ -260,9 +265,11 @@ def build_script(job, res):
         it[1], it[2] = round(a, 2), round(min(b, dur), 2)
     script = [{"matn": t, "start": a, "end": b} for t, a, b in items]
     job.title = (res.get("nomi") or job.name or "").strip()
+    if not job.kind_manual and res.get("turi") in CODE_LABEL:
+        job.kind = res["turi"]
     job.caption = hide_title((res.get("izoh") or "").strip(), job)
     job.tags = clean_tags(res.get("heshteglar") or [], job)
-    if job.code:
+    if job.code and SPOKEN_CTA:
         script.append(cta_item(job))
     return script
 
@@ -287,7 +294,8 @@ def hide_title(text, job):
 def clean_tags(tags, job):
     banned = {re.sub(r"[\W_]+", "", t.lower()) for t in _title_words(job)}
     out, seen = [], set()
-    for t in BASE_TAGS.split() + [str(x) for x in tags]:
+    base = ANIME_TAGS if job.kind == "anime" else BASE_TAGS
+    for t in base.split() + [str(x) for x in tags]:
         t = "#" + re.sub(r"[^\w]+", "", t.strip().lstrip("#"), flags=re.UNICODE)
         key = t[1:].lower()
         if len(key) < 2 or key in seen or any(b and (b in key or key in b) and len(key) > 3 for b in banned):
@@ -303,10 +311,22 @@ def insta_caption(job, text=None):
     if text:
         parts.append(text)
     if job.code:
-        parts.append(CAPTION_CTA.format(kod=job.code))
+        cta = CAPTION_CTA.format(kod=job.code)
+        parts.append(cta.replace("kinoni", "animeni") if job.kind == "anime" else cta)
     if job.tags:
         parts.append(" ".join(job.tags))
     return "\n\n".join(parts)
+
+
+def code_label(job):
+    """Videoning pastidagi yozuv: «Kino kodi: 125» yoki «Anime kodi: 125» (kod bo'lmasa — bo'sh)."""
+    if not job.code:
+        return ""
+    return CODE_LABEL.get(job.kind, CODE_LABEL["kino"]).format(kod=job.code)
+
+
+def kind_button(job):
+    return (f"🏷 {code_label(job) or 'Kino kodi'}  🔁", "kind")
 
 
 def remap_script(job, sentences):
@@ -340,7 +360,8 @@ async def remember_job(job):
                 "name": job.name, "code": job.code, "t": int(time.time())}
         if job.script:  # matn va lahzalar ham saqlanadi — davom ettirishda Gemini qayta ishlamaydi
             meta.update(script=job.script, moments=job.moments, summary=job.summary, characters=job.characters,
-                        title=job.title, caption=job.caption, tags=job.tags, target_sec=job.target_sec)
+                        title=job.title, caption=job.caption, tags=job.tags, target_sec=job.target_sec,
+                        kind=job.kind, kind_manual=job.kind_manual)
         lib["job"] = meta
         music.save_soon(bot, job.chat_id)
     except Exception as e:
@@ -366,6 +387,9 @@ async def resume_job(uid, chat_id):
         job.summary, job.characters = meta.get("summary") or "", meta.get("characters") or []
         job.title, job.caption, job.tags = meta.get("title") or "", meta.get("caption") or "", meta.get("tags") or []
         job.target_sec = int(meta.get("target_sec") or DEFAULT_LEN)
+        job.kind, job.kind_manual = meta.get("kind") or "kino", bool(meta.get("kind_manual"))
+        if not SPOKEN_CTA:
+            job.script = [x for x in job.script if not x.get("cta")] or job.script
     JOBS[uid] = job
     sm = await bot.send_message(chat_id, f"🔁 Davom ettiryapman: kinoni qaytadan yuklab olyapman ({human_mb(job.size)})…")
     job.status = Status(chat_id, sm.message_id)
@@ -492,6 +516,8 @@ async def send_script(job):
             "Matnni o‘zgartirmoqchi bo‘lsangiz, o‘zgartirilgan matnni yozib yuboring.</i>")
     text += "\n\n🎵 <i>Ovozsiz video kerak bo‘lsa — «Oddiy video»: kinoning eng qiziq sahnasi + qo‘shiq.</i>"
     rows = [[("🎵 Oddiy video (ovozsiz)", "plain")], [("🔄 Boshqa matn", "regen")]]
+    if job.code:
+        rows.append([kind_button(job)])
     if ELEVEN_KEY:
         rows.insert(0, [("🤖 ElevenLabs ovozida o‘qit", "tts")])
     await bot.send_message(job.chat_id, text, reply_markup=kb(*rows))
@@ -553,8 +579,8 @@ async def render(job):
         windows = [(s["start"], s["end"]) for s in job.script]
         shots = video.plan_shots(seg_durs, windows, job.duration, base_len=2.0 if total < 75 else 2.4)
         maxrate = video.video_maxrate(total)
-        has_cta = bool(job.script[-1].get("cta") and job.code)
-        cta = {"line1": CTA_LINE1, "line2": f"KOD: {job.code}"} if has_cta else None
+        has_cta = False  # oxirida «@bot / KOD» yozuvi yo'q — kod butun video davomida pastda yoziladi
+        cta = None
         last = len(job.script) - 1
         vfiles, afiles, used = [], [], []
         await st.set("⏳ Navbat kutilmoqda…", force=True)
@@ -567,7 +593,7 @@ async def render(job):
                 used.append((t, t + d))
                 is_cta = has_cta and sh["sentence"] == last
                 ov = video.text_overlays(job.dir, WATERMARK, cta if is_cta else None, fade=is_cta and first_cta,
-                                         size=job.out_px)
+                                         size=job.out_px, code=code_label(job))
                 first_cta = first_cta and not is_cta
                 vo, ao = os.path.join(job.dir, f"shot_{i:03d}.mp4"), os.path.join(job.dir, f"shot_{i:03d}.wav")
                 await video.render_shot(job.movie, t, sh["frames"], vo, ao, job.has_audio, ov, maxrate, job.out_px)
@@ -779,9 +805,7 @@ async def plain_job(job, new=False):
         total_frames = int((end - start) * fps)
         total = total_frames / fps
         maxrate = video.video_maxrate(total)
-        cta = {"line1": CTA_LINE1, "line2": f"KOD: {job.code}"} if job.code else None
-        ov = video.text_overlays(job.dir, WATERMARK, cta, size=job.out_px,
-                                 cta_from=max(0.0, total - PLAIN_CTA_SEC) if cta else None)
+        ov = video.text_overlays(job.dir, WATERMARK, size=job.out_px, code=code_label(job))
         cv, cb = os.path.join(job.dir, "plain.mp4"), os.path.join(job.dir, "plain_bg.wav")
         await st.set(f"⏳ Navbat kutilmoqda… (sahna {fmt_sec(total)})", force=True)
         async with HEAVY:
@@ -1155,14 +1179,14 @@ async def cmd_code(m: Message, command: CommandObject):
     if not code:
         return await m.answer("Masalan: <code>/kod 125</code>")
     job.code, job.asking = code, (None if job.asking == "code" else job.asking)
-    if job.script:
+    if job.script and SPOKEN_CTA:
         if job.script[-1].get("cta"):
             job.script[-1]["matn"] = CTA_TEXT.format(kod=code)
         else:
             job.script.append(cta_item(job))
         return await m.answer(f"✅ Kod: {esc(code)}\nOxirgi gap: <i>{esc(job.script[-1]['matn'])}</i>\n"
                               "Ovozni shu gap bilan o‘qib yuboring.")
-    await m.answer(f"✅ Kod: {esc(code)}")
+    await m.answer(f"✅ Kod: {esc(code)}. Videoning pastida «{esc(code_label(job))}» deb yoziladi.")
 
 
 @dp.message(F.video | F.document)
@@ -1411,6 +1435,28 @@ async def on_voice_pick(c: CallbackQuery):
     lib["ovoz"] = vid
     music.save_soon(bot, chat_id, delay=0.5)
     await bot.send_message(chat_id, f"✅ Diktor: <b>{eleven.voice_name(vid)}</b>")
+
+
+@dp.callback_query(F.data == "kind")
+async def on_kind(c: CallbackQuery):
+    job = JOBS.get(c.from_user.id)
+    if not job or not allowed(c.from_user.id):
+        await c.answer()
+        return await bot.send_message(c.from_user.id, "Bu ish eskirgan. Kinoni qaytadan yuboring 🎬")
+    job.kind = "anime" if job.kind == "kino" else "kino"
+    job.kind_manual = True
+    other = {t.lower() for t in (BASE_TAGS if job.kind == "anime" else ANIME_TAGS).split()}
+    job.tags = clean_tags([t for t in job.tags if t.lower() not in other], job)
+    asyncio.create_task(remember_job(job))
+    await c.answer(f"Endi videoda «{code_label(job)}» deb yoziladi", show_alert=False)
+    if c.message and c.message.reply_markup:
+        rows = [[(b.text, b.callback_data) for b in row] for row in c.message.reply_markup.inline_keyboard]
+        rows = [[kind_button(job) if d == "kind" else (t, d) for t, d in row] for row in rows]
+        try:
+            await bot.edit_message_reply_markup(chat_id=c.message.chat.id, message_id=c.message.message_id,
+                                                reply_markup=kb(*rows))
+        except Exception as e:
+            log.warning("tugmani yangilab bo'lmadi: %r", e)
 
 
 @dp.callback_query(F.data == "resume")

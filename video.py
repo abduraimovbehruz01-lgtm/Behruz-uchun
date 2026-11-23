@@ -551,16 +551,23 @@ def _dt(textfile, size, x, y, extra=""):
             + (":" + extra if extra else ""))
 
 
-def text_overlays(workdir, watermark="", cta=None, fade=False, size=None, cta_from=None):
-    """Kadrga yoziladigan yozuvlar: pastda watermark, oxirgi gapda «KOD: 123».
-    cta_from — uzun bitta bo'lakda «KOD» yozuvi shu soniyadan boshlab chiqadi (silliq paydo bo'lib)."""
+def text_overlays(workdir, watermark="", cta=None, fade=False, size=None, cta_from=None, code=""):
+    """Kadrga yoziladigan yozuvlar: eng pastda «Kino kodi: 123» (butun video davomida), uning tepasida watermark.
+    cta — (eski) oxirgi gapdagi «@bot / KOD» yozuvi; cta_from — uzun bo'lakda u shu soniyadan chiqadi."""
     size = size or SIZE
     k = size / 720
     res = []
     sh = max(1, int(round(k)))
+    lift = 0
+    if code:
+        cf = _write(os.path.join(workdir, "code.txt"), code)
+        fs, pad = int(30 * k), int(10 * k)
+        res.append(_dt(cf, fs, "(w-text_w)/2", f"h-text_h-{int(30 * k)}",
+                       f"fontcolor=white:box=1:boxcolor=black@0.55:boxborderw={pad}"))
+        lift = fs + 2 * pad + int(12 * k)
     if watermark:
         wm = _write(os.path.join(workdir, "wm.txt"), watermark)
-        res.append(_dt(wm, int(26 * k), "(w-text_w)/2", f"h-text_h-{int(34 * k)}",
+        res.append(_dt(wm, int(26 * k), "(w-text_w)/2", f"h-text_h-{int(34 * k) + lift}",
                        f"fontcolor=white@0.82:shadowcolor=black@0.7:shadowx={sh}:shadowy={sh}"))
     if cta and cta.get("line2"):
         alpha = ":alpha='min(1,t/0.35)'" if fade else ""
