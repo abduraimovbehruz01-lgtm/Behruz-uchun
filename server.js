@@ -94,7 +94,8 @@ async function main() {
       }
       startError = `Telegram bilan aloqa yo‘q: ${e.message}`;
       // Telegram cheklov qo‘ygan bo‘lsa, so‘rovlar bilan uni uzaytirmaslik uchun uzoqroq kutamiz
-      const wait = e.retryAfter ? (e.retryAfter + 10) * 1000 : 45000;
+      // Bir necha urinishdan keyin har 5 daqiqada bir marta so‘raymiz
+      const wait = i >= 2 ? 300000 : (e.retryAfter ? (e.retryAfter + 10) * 1000 : 45000);
       console.error(`[bot] ${startError} — ${Math.round(wait / 1000)} soniyadan keyin qayta urinamiz`);
       await sleep(wait);
     }
