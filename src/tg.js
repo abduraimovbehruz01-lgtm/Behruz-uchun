@@ -75,7 +75,7 @@ async function call(method, params = {}, files = null, opt = {}) {
         method: 'POST',
         headers: { 'content-type': type, 'content-length': body.length },
         body,
-        timeout: method === 'getUpdates' ? 75000 : (files ? 60000 : 25000),
+        timeout: opt.timeout || (method === 'getUpdates' ? 75000 : (files ? 90000 : 60000)),
       });
     } catch (e) {
       if (attempt < tries) { await sleep(800 * (attempt + 1)); continue; }

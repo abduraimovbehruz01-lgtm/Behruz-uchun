@@ -79,7 +79,8 @@ async function main() {
   for (let i = 0; ; i += 1) {
     const t0 = Date.now();
     try {
-      const me = await tg.call('getMe', {}, null, { retry: false });
+      // Yangi tokenda Telegram birinchi so‘rovga sekin javob berishi mumkin — uzoq kutamiz
+      const me = await tg.call('getMe', {}, null, { retry: false, timeout: 150000 });
       core.me.id = me.id;
       core.me.username = me.username;
       startError = '';
