@@ -94,13 +94,27 @@ async function netDiag() {
     sock.on('error', reject);
   });
   const hget = (url, opts = {}) => new Promise((resolve, reject) => {
-    const r = https.get(url, opts, (res) => { res.resume(); resolve(`HTTP ${res.statusCode}`); });
+    const r = https.get(url, opts, (res) => {
+      let b = '';
+      res.on('data', (d) => { b += d; });
+      res.on('end', () => resolve(`HTTP ${res.statusCode} ${b.slice(0, 160)} ra=${res.headers['retry-after'] || '-'}`));
+    });
     r.on('error', reject);
   });
+  const hpost = (url) => new Promise((resolve, reject) => {
+    const body = Buffer.from('{}');
+    const r = https.request(url, { method: 'POST', family: 4, headers: { 'content-type': 'application/json', 'content-length': body.length } }, (res) => {
+      let b = '';
+      res.on('data', (d) => { b += d; });
+      res.on('end', () => resolve(`HTTP ${res.statusCode} ${b.slice(0, 160)}`));
+    });
+    r.on('error', reject);
+    r.end(body);
+  });
   const results = [];
-  results.push(await t('raw-get', raw));
-  results.push(await t('raw-post', rawPost));
   results.push(await t('https-get', () => hget(`https://api.telegram.org${path}`)));
+  results.push(await t('https-post', () => hpost(`https://api.telegram.org${path}`)));
+  results.push(await t('getWebhookInfo', () => hget(`https://api.telegram.org/bot${cfg.BOT_TOKEN}/getWebhookInfo`, { family: 4 })));
   results.push(await t('https-get-ipv4', () => hget(`https://api.telegram.org${path}`, { family: 4 })));
   results.push(await t('fetch', () => fetch(`https://api.telegram.org${path}`).then((r) => `HTTP ${r.status}`)));
   results.push(await t('google', () => hget('https://www.google.com/')));
