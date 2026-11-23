@@ -72,6 +72,53 @@ async def run(cmd, timeout=None):
     return out, err
 
 
+async def run_progress(cmd, total_sec, on_progress, timeout=None):
+    """ffmpeg ni -progress bilan ishga tushiradi va tayyor bo'lgan soniyalarni on_progress(soniya) ga berib turadi."""
+    cmd = [cmd[0], "-progress", "pipe:1", "-nostats", *cmd[1:]]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    tail = bytearray()
+
+    async def read_err():
+        while True:
+            b = await proc.stderr.read(8192)
+            if not b:
+                return
+            tail.extend(b)
+            del tail[:-8000]
+
+    async def read_out():
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                return
+            if line.startswith((b"out_time_us=", b"out_time_ms=")):
+                try:
+                    sec = int(line.split(b"=", 1)[1]) / 1e6
+                except ValueError:
+                    continue
+                try:
+                    on_progress(max(0.0, min(sec, float(total_sec))))
+                except Exception:
+                    pass
+
+    try:
+        await asyncio.wait_for(asyncio.gather(read_out(), read_err(), proc.wait()), timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError) as e:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        if isinstance(e, asyncio.CancelledError):
+            raise
+        raise FFError(f"{os.path.basename(cmd[0])}: vaqt tugadi")
+    if proc.returncode != 0:
+        lines = tail.decode("utf-8", "ignore").strip().splitlines()[-5:]
+        raise FFError(f"{os.path.basename(cmd[0])} xato ({proc.returncode}): " + " | ".join(lines))
+
+
 async def probe(path):
     out, _ = await run([
         "ffprobe", "-v", "error",
@@ -202,6 +249,77 @@ async def choose_start(movie, t, d, duration, used, min_luma=14.0):
     if best_dark is not None:
         return best_dark[1] + 0.01
     return min(max(0.0, t), limit)
+
+
+async def scene_cuts(movie, t0, span, thr=0.3):
+    """[t0, t0+span] oralig'ida kadr (sahna) almashgan joylar — kichik o'lchamda, shuning uchun arzon."""
+    t0 = max(0.0, t0)
+    try:
+        _, err = await run([
+            "ffmpeg", "-nostdin", "-v", "info", "-threads", "1", "-ss", f"{t0:.3f}", "-t", f"{span:.3f}",
+            "-copyts", "-i", movie, "-map", "0:V:0", "-an", "-sn",
+            "-vf", f"scale=160:90,select='gt(scene,{thr})',showinfo", "-f", "null", "-",
+        ], timeout=600)
+    except FFError:
+        return []
+    return [t for t in (float(x) for x in _PTS.findall(err.decode("utf-8", "ignore")))
+            if t0 - 0.05 <= t <= t0 + span + 0.05]
+
+
+async def extract_wav(movie, t0, dur, out, rate=16000):
+    """Kinoning [t0, t0+dur] qismidagi ovozni mono WAV ga chiqaradi (faqat ovoz o'qiladi — arzon)."""
+    await run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", f"{max(0.0, t0):.3f}", "-t", f"{dur:.3f}",
+               "-i", movie, "-map", "0:a:0", "-vn", "-sn", "-ac", "1", "-ar", str(rate), "-c:a", "pcm_s16le", out],
+              timeout=900)
+    return out
+
+
+def rms_envelope(wav_path, hop_s=0.02):
+    """Ovoz balandligi (dBFS) har hop_s soniyada."""
+    with wave.open(wav_path) as w:
+        sr, ch = w.getframerate(), w.getnchannels()
+        x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+    if ch > 1:
+        x = x[: len(x) // ch * ch].reshape(-1, ch).mean(axis=1)
+    hop = max(1, int(sr * hop_s))
+    n = len(x) // hop
+    if n == 0:
+        return np.zeros(0, dtype=np.float32)
+    fr = x[: n * hop].reshape(n, hop)
+    return 20 * np.log10(np.sqrt((fr ** 2).mean(axis=1) + 1e-12) + 1e-9)
+
+
+def wav_rms_db(wav_path):
+    """Butun fayl bo'yicha o'rtacha balandlik (dBFS, energiya bo'yicha)."""
+    env = rms_envelope(wav_path, 0.05)
+    if len(env) == 0:
+        return -60.0
+    return float(10 * np.log10(np.mean(10 ** (env / 10)) + 1e-12))
+
+
+def best_cut(target, cuts, env, env_t0, hop_s=0.02, lo=-2.5, hi=1.5):
+    """Kesish joyini tanlaydi: target atrofida kadr almashgan va jim (gap o'rtasi bo'lmagan) nuqtani afzal ko'radi."""
+    if len(env) == 0:
+        return target
+    floor = float(np.percentile(env, 10))
+
+    def loud(t, w=0.2):
+        a, b = int((t - w - env_t0) / hop_s), int((t + w - env_t0) / hop_s) + 1
+        seg = env[max(0, a):max(0, min(len(env), b))]
+        return float(seg.max()) if len(seg) else floor
+
+    cands = [(t, True) for t in cuts if target + lo <= t <= target + hi]
+    step = 0.1
+    k = lo
+    while k <= hi + 1e-6:
+        cands.append((target + k, False))
+        k += step
+    best, best_score = target, None
+    for t, is_cut in cands:
+        score = max(0.0, loud(t) - floor) / 6.0 + abs(t - target) * 0.35 - (1.2 if is_cut else 0.0)
+        if best_score is None or score < best_score:
+            best, best_score = t, score
+    return best
 
 
 # ---------------- Ovozni gaplarga bo'lish ----------------
@@ -433,8 +551,9 @@ def _dt(textfile, size, x, y, extra=""):
             + (":" + extra if extra else ""))
 
 
-def text_overlays(workdir, watermark="", cta=None, fade=False, size=None):
-    """Kadrga yoziladigan yozuvlar: pastda watermark, oxirgi gapda «KOD: 123»."""
+def text_overlays(workdir, watermark="", cta=None, fade=False, size=None, cta_from=None):
+    """Kadrga yoziladigan yozuvlar: pastda watermark, oxirgi gapda «KOD: 123».
+    cta_from — uzun bitta bo'lakda «KOD» yozuvi shu soniyadan boshlab chiqadi (silliq paydo bo'lib)."""
     size = size or SIZE
     k = size / 720
     res = []
@@ -445,6 +564,8 @@ def text_overlays(workdir, watermark="", cta=None, fade=False, size=None):
                        f"fontcolor=white@0.82:shadowcolor=black@0.7:shadowx={sh}:shadowy={sh}"))
     if cta and cta.get("line2"):
         alpha = ":alpha='min(1,t/0.35)'" if fade else ""
+        if cta_from is not None:
+            alpha = f":alpha='min(1,max(0,(t-{cta_from:.3f})/0.35))':enable='gte(t,{cta_from:.3f})'"
         y2 = int(size * 0.66)
         if cta.get("line1"):
             l1 = _write(os.path.join(workdir, "cta1.txt"), cta["line1"])
@@ -456,10 +577,12 @@ def text_overlays(workdir, watermark="", cta=None, fade=False, size=None):
     return res
 
 
-async def render_shot(movie, t, frames, out_video, out_audio, has_audio=True, overlays=(), maxrate=6000, size=None):
-    """Bitta sahna: kvadrat qirqish + rang + yozuvlar, yakuniy sifatda. Ovozi alohida WAV ga."""
+async def render_shot(movie, t, frames, out_video, out_audio, has_audio=True, overlays=(), maxrate=6000, size=None,
+                      grade=True, progress=None):
+    """Bitta sahna: kvadrat qirqish + rang (grade=False bo'lsa — rangsiz, effektsiz) + yozuvlar, yakuniy sifatda.
+    Ovozi alohida WAV ga."""
     d = frames / FPS
-    vf = ",".join([_crop(size or SIZE), GRADE, f"fps={FPS}", "format=yuv420p", *overlays])
+    vf = ",".join([_crop(size or SIZE), *([GRADE] if grade else []), f"fps={FPS}", "format=yuv420p", *overlays])
     cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-filter_threads", THREADS,
            "-threads", THREADS, "-ss", f"{t:.3f}", "-i", movie]
     if not has_audio:
@@ -473,7 +596,11 @@ async def render_shot(movie, t, frames, out_video, out_audio, has_audio=True, ov
         "-af", f"aresample=44100,aformat=sample_fmts=s16:channel_layouts=stereo,atrim=0:{d:.4f},apad=whole_dur={d:.4f}",
         "-c:a", "pcm_s16le", "-t", f"{d:.4f}", out_audio,
     ]
-    await run(cmd, timeout=900)
+    timeout = max(900.0, d * 20)  # bepul serverda uzun bo'lak sekin kodlanadi
+    if progress is None:
+        await run(cmd, timeout=timeout)
+    else:
+        await run_progress(cmd, d, progress, timeout=timeout)
 
 
 async def concat(files, out, copy=True):
@@ -541,20 +668,67 @@ async def final_mux(video_path, bg_wav, voice_path, v_start, v_end, total, out, 
     return {"width": size or SIZE, "height": size or SIZE, "duration": total}
 
 
+PLAIN_MUSIC_DB = float(os.environ.get("PLAIN_MUSIC_DB", "-9"))  # oddiy videoda qo'shiq kino ovozidan shuncha past
+
+
+async def plain_mux(video_path, movie_wav, total, out, music=None, size=None, target=-14.0, music_rel_db=None):
+    """Oddiy video: kino ovozi asosiy (baland), qo'shiq orqada past; kino baland joylarda qo'shiq yana biroz pasayadi.
+    Video nusxalanadi (qayta kodlanmaydi). music: {"path", "start", "rms"}"""
+    total = float(total)
+    rel = PLAIN_MUSIC_DB if music_rel_db is None else float(music_rel_db)
+    mv = max(-12.0, min(24.0, -20.0 - wav_rms_db(movie_wav)))
+    fade_out = max(0.0, total - 0.35)
+
+    async def mux(extra):
+        fc = (f"[1:a]aformat=sample_fmts=fltp:channel_layouts=stereo,volume={mv:.1f}dB,"
+              f"afade=t=in:st=0:d=0.04,afade=t=out:st={fade_out:.3f}:d=0.35")
+        if music:
+            mg = max(-40.0, min(20.0, (-20.0 + rel) - float(music.get("rms", -20.0))))
+            fc += (
+                ",asplit=2[mv][sc];"
+                f"[2:a]atrim=start={float(music.get('start', 0)):.2f},asetpts=PTS-STARTPTS,aresample=44100,"
+                f"aformat=sample_fmts=fltp:channel_layouts=stereo,volume={mg:.1f}dB,"
+                f"afade=t=in:st=0:d=1.5,afade=t=out:st={max(0.0, total - 2.5):.2f}:d=2.5,atrim=end={total:.3f}[mu0];"
+                "[mu0][sc]sidechaincompress=threshold=0.08:ratio=2:attack=60:release=800[mua];"
+                "[mv][mua]amix=inputs=2:duration=first:normalize=0,"
+            )
+        else:
+            fc += ","
+        fc += f"volume={extra:.1f}dB,alimiter=limit=0.84:attack=5:release=60:level=false[a]"
+        cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", video_path, "-i", movie_wav]
+        if music:
+            cmd += ["-stream_loop", "-1", "-i", music["path"]]
+        cmd += ["-filter_complex", fc, "-map", "0:v:0", "-map", "[a]", "-t", f"{total:.3f}",
+                "-c:v", "copy", "-c:a", "aac", "-aac_coder", "fast", "-b:a", "160k", "-ar", "44100",
+                "-movflags", "+faststart", out]
+        await run(cmd, timeout=1800)
+
+    await mux(0.0)
+    lufs = await measure_lufs(out)
+    if lufs is not None and abs(lufs - target) > 1.0:
+        await mux(max(-10.0, min(14.0, target - lufs)))
+    return {"width": size or SIZE, "height": size or SIZE, "duration": total}
+
+
 def vertical_dims(size):
     vh = int(round(size * 16 / 9 / 2)) * 2
     return size, vh, (vh - size) // 2
 
 
-async def make_vertical(square_mp4, out, total=60.0, size=None):
-    """9:16 (Reels) variant: kvadrat video o'rtada, orqasida uning xiralashtirilgan nusxasi."""
+async def make_vertical(square_mp4, out, total=60.0, size=None, plain=False):
+    """9:16 (Reels) variant: kvadrat video o'rtada, orqasida uning xiralashtirilgan nusxasi.
+    plain=True — effektsiz: tepada va pastda shunchaki qora maydon."""
     size = size or SIZE
     vw, vh, top = vertical_dims(size)
     mr = video_maxrate(total)
     cw, ch = int(size * 0.47) // 2 * 2, int(size * 0.83) // 2 * 2
-    # fonni kichraytirib xiralashtirish → kattalashtirish: chiroyli va juda arzon
-    fc = (f"[0:v]split=2[va][vb];[va]crop={cw}:{ch}:(iw-{cw})/2:0,scale=144:256,boxblur=4:1,scale={vw}:{vh}:flags=bilinear,"
-          f"eq=brightness=-0.12:saturation=0.8[bg];[bg][vb]overlay=0:{top},format=yuv420p[v]")
+    if plain:
+        fc = f"[0:v]pad={vw}:{vh}:0:{top}:black,format=yuv420p[v]"
+    else:
+        # fonni kichraytirib xiralashtirish → kattalashtirish: chiroyli va juda arzon
+        fc = (f"[0:v]split=2[va][vb];[va]crop={cw}:{ch}:(iw-{cw})/2:0,scale=144:256,boxblur=4:1,"
+              f"scale={vw}:{vh}:flags=bilinear,eq=brightness=-0.12:saturation=0.8[bg];[bg][vb]overlay=0:{top},"
+              "format=yuv420p[v]")
     await run([
         "ffmpeg", "-nostdin", "-v", "error", "-y", "-filter_threads", THREADS, "-filter_complex_threads", THREADS,
         "-i", square_mp4, "-filter_complex", fc, "-map", "[v]", "-map", "0:a:0",

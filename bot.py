@@ -111,6 +111,8 @@ class Job:
     task: asyncio.Task | None = None
     last: float = field(default_factory=time.time)
     variant: int = 0
+    mode: str = "story"                                # oxirgi video: "story" (hikoya) yoki "plain" (oddiy)
+    plain: dict = field(default_factory=dict)          # oddiy video: sahnalar, kesilgan video, ovoz, tayyor fayl
 
 
 JOBS: dict[int, Job] = {}
@@ -118,6 +120,9 @@ PENDING_AUDIO: dict[int, dict] = {}   # uid → {xabar raqami: fayl} — «dikto
 RESTART_WINDOW = 120   # yig'ish boshlanganidan keyin shuncha soniya ichida yana qism kelsa — qaytadan yig'amiz
 PART_WAIT = 120        # «1/2» kabi belgi bo'lsa, qolgan qismlarni shuncha soniyagacha kutamiz
 MUSIC_SEM = asyncio.Semaphore(1)      # qo'shiqlar birma-bir tahlil qilinadi
+PLAIN_MIN = int(os.environ.get("PLAIN_MIN_SEC", "45"))    # oddiy video: eng qisqasi (soniya)
+PLAIN_MAX = int(os.environ.get("PLAIN_MAX_SEC", "120"))   # oddiy video: eng uzuni (soniya)
+PLAIN_CTA_SEC = 4.5    # oddiy video oxirida shuncha soniya «@behruzfilmbot / KOD» yozuvi
 MUSIC_DIR = os.path.join(WORK_DIR, "music")
 GEMINI_STATUS = "tekshirilmagan"
 ELEVEN_STATUS = ""
@@ -292,10 +297,11 @@ def clean_tags(tags, job):
     return out[:16]
 
 
-def insta_caption(job):
+def insta_caption(job, text=None):
     parts = []
-    if job.caption:
-        parts.append(job.caption)
+    text = text or job.caption
+    if text:
+        parts.append(text)
     if job.code:
         parts.append(CAPTION_CTA.format(kod=job.code))
     if job.tags:
@@ -484,7 +490,8 @@ async def send_script(job):
     text = (f"{title}🎙 <b>Shu matnni o‘qib, ovozli xabar yuboring:</b>\n\n{body}\n\n"
             "💡 <i>Har gapdan keyin bir lahza to‘xtab o‘qing — sahnalar ovozga aniq mos tushadi. "
             "Matnni o‘zgartirmoqchi bo‘lsangiz, o‘zgartirilgan matnni yozib yuboring.</i>")
-    rows = [[("🔄 Boshqa matn", "regen")]]
+    text += "\n\n🎵 <i>Ovozsiz video kerak bo‘lsa — «Oddiy video»: kinoning eng qiziq sahnasi + qo‘shiq.</i>"
+    rows = [[("🎵 Oddiy video (ovozsiz)", "plain")], [("🔄 Boshqa matn", "regen")]]
     if ELEVEN_KEY:
         rows.insert(0, [("🤖 ElevenLabs ovozida o‘qit", "tts")])
     await bot.send_message(job.chat_id, text, reply_markup=kb(*rows))
@@ -511,6 +518,7 @@ async def regen(job):
 
 async def render(job):
     job.busy = "render"
+    job.mode = "story"
     vlen = await video.audio_duration(job.voice)
     st = Status(job.chat_id, (await bot.send_message(
         job.chat_id, f"🎙 Ovoz qabul qilindi ({fmt_sec(vlen)}). Video yig‘ilmoqda…")).message_id)
@@ -630,7 +638,7 @@ async def finish(job, layout, st=None):
             rows.append([("🎵 Boshqa musiqa", "mnext"), ("🔇 Musiqasiz", "mnone")])
         elif job.no_music:
             rows.append([("🎵 Musiqa qo‘shish", "mback")])
-        rows.append([("🔄 Boshqa matn", "regen")])
+        rows.append([("🔄 Boshqa matn", "regen"), ("🎵 Oddiy video", "plain")])
         if os.path.getsize(out) > 49 * 1024 * 1024 and BIG is not None:
             await BIG.send_video(job.chat_id, out, job.timing["total"], w, h, hint_msg_id=job.msg_id)
             await bot.send_message(job.chat_id, note, reply_markup=kb(*rows))
@@ -655,6 +663,220 @@ async def finish(job, layout, st=None):
         job.last = time.time()
 
 
+# ---------------- Oddiy video: eng qiziq sahna + qo'shiq, effektsiz ----------------
+
+def story_ready(job):
+    return bool(job.concat and os.path.exists(job.concat) and job.bg and job.timing)
+
+
+def plain_ready(job):
+    p = job.plain
+    return bool(p.get("concat") and os.path.exists(p["concat"]) and p.get("bg") and p.get("total"))
+
+
+def clamp_len(s, e, dur):
+    """Sahna uzunligini PLAIN_MIN–PLAIN_MAX oralig'iga va kino ichiga keltiradi."""
+    s = max(0.0, s)
+    e = min(e, dur - 0.5)
+    if e - s > PLAIN_MAX:
+        e = s + PLAIN_MAX
+    if e - s < PLAIN_MIN:
+        e = min(dur - 0.5, s + PLAIN_MIN)
+        s = max(0.0, e - PLAIN_MIN)
+    return s, e
+
+
+def fallback_scenes(job, excl):
+    """Gemini band bo'lsa: kuchli lahzalar eng zich joylashgan oraliqlardan sahna tanlaymiz."""
+    dur = job.duration
+    lo, hi = min(120.0, dur * 0.05), dur * 0.85
+    moms = [m for m in job.moments or [] if lo <= m["t"] <= hi]
+    strong = [m["t"] for m in moms if m.get("kuchli")]
+    density = {id(m): sum(1 for x in strong if m["t"] - 5 <= x <= m["t"] + 75) for m in moms}
+    pool = sorted(moms, key=lambda m: (not m.get("kuchli"), -density[id(m)]))  # avval kuchlilar, zichi birinchi
+    res = []
+    for m in pool:
+        a = max(0.0, m["t"] - 8)
+        b = min(dur - 1, a + 75)
+        taken = list(excl) + [(r["start"], r["end"]) for r in res]
+        if b - a < PLAIN_MIN or any(a < ue and b > us for us, ue in taken):
+            continue
+        res.append({"start": a, "end": b, "nima": m.get("voqea") or "", "izoh": ""})
+        if len(res) == 3:
+            break
+    return res
+
+
+async def refine_bounds(job, cand):
+    """Gemini taxminiy oralig'ini aniqlaydi: sahna atrofini eshittirib aniq boshi/oxirini so'raydi, keyin
+    kesish joylarini kadr almashgan va jim (gap o'rtasi bo'lmagan) nuqtalarga yopishtiradi."""
+    a, b = cand["start"], cand["end"]
+    A, B = max(0.0, a - 40), min(job.duration, b + 40)
+    wav = os.path.join(job.dir, "scene.wav")
+    async with HEAVY:
+        await video.extract_wav(job.movie, A, B - A, wav)
+    s, e = a, b
+    try:
+        mp3 = os.path.join(job.dir, "scene.mp3")
+        await video.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", wav, "-c:a", "libmp3lame", "-b:a", "48k",
+                         mp3], timeout=300)
+        r = await gemini.refine_scene(gem, HTTP, mp3, job.name or job.title or "", A, cand.get("nima") or "",
+                                      PLAIN_MIN, PLAIN_MAX)
+        if r:
+            rs, rend = A + r[0], A + r[1]
+            if PLAIN_MIN * 0.8 <= rend - rs <= PLAIN_MAX * 1.15 and abs(rs - a) < 90:
+                s, e = rs, rend
+        log.info("sahna aniqlandi: %.1f–%.1f (taxmin %.1f–%.1f)", s, e, a, b)
+    except Exception as ex:
+        log.warning("sahna chegarasini Gemini aniqlay olmadi: %r", ex)
+    s, e = clamp_len(s, e, job.duration)
+    env = video.rms_envelope(wav)
+    async with HEAVY:
+        cs = await video.scene_cuts(job.movie, s - 3.0, 5.0)
+        ce = await video.scene_cuts(job.movie, e - 2.5, 5.5)
+    s2 = video.best_cut(s, cs, env, A, lo=-2.5, hi=1.5)
+    e2 = video.best_cut(e, ce, env, A, lo=-2.0, hi=2.5)
+    if e2 - s2 < PLAIN_MIN:
+        e2 = s2 + PLAIN_MIN
+    s, e = clamp_len(s2, e2, job.duration)
+    for f in (wav, os.path.join(job.dir, "scene.mp3")):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+    return round(s + 0.01, 3), round(e - 0.02, 3)
+
+
+async def plain_job(job, new=False):
+    """Oddiy video: Gemini tanlagan eng qiziq sahna effektsiz kesiladi, kino ovozi baland, qo'shiq past."""
+    job.busy = "plain"
+    job.mode = "plain"
+    p = job.plain
+    st = Status(job.chat_id, (await bot.send_message(
+        job.chat_id, "🎞 Kinoning eng qiziq sahnasi qidirilmoqda…")).message_id)
+    try:
+        cands = p.get("cands") or []
+        idx = p.get("idx", -1) + 1 if new or not cands else max(0, p.get("idx", 0))
+        if idx >= len(cands):
+            excl = [tuple(x) for x in p.get("used", [])]
+            try:
+                cands = await gem.pick_scenes(HTTP, job.name or job.title or "", job.duration, job.moments or [],
+                                              job.summary, job.characters, PLAIN_MIN, PLAIN_MAX, excl)
+            except Exception as e:
+                log.warning("Gemini sahna tanlay olmadi: %r — lahzalardan tanlanadi", e)
+                cands = []
+            if not cands:
+                cands = fallback_scenes(job, excl)
+            if not cands:
+                raise RuntimeError("kinodan mos sahna topilmadi")
+            idx = 0
+        p["cands"], p["idx"] = cands, idx
+        cand = cands[idx]
+        await st.set(f"🎞 Sahna: {esc(cand.get('nima') or '')}\n✂️ Aniq boshlanishi va oxiri aniqlanmoqda…", force=True)
+        start, end = await refine_bounds(job, cand)
+        p.setdefault("used", []).append((start, end))
+        fps = video.FPS
+        total_frames = int((end - start) * fps)
+        total = total_frames / fps
+        maxrate = video.video_maxrate(total)
+        cta = {"line1": CTA_LINE1, "line2": f"KOD: {job.code}"} if job.code else None
+        ov = video.text_overlays(job.dir, WATERMARK, cta, size=job.out_px,
+                                 cta_from=max(0.0, total - PLAIN_CTA_SEC) if cta else None)
+        cv, cb = os.path.join(job.dir, "plain.mp4"), os.path.join(job.dir, "plain_bg.wav")
+        await st.set(f"⏳ Navbat kutilmoqda… (sahna {fmt_sec(total)})", force=True)
+        async with HEAVY:
+            t0 = time.time()
+            await st.set(f"✂️ Sahna kesilmoqda ({fmt_sec(total)})…", force=True)
+
+            def progress(sec):
+                job.last = time.time()
+                if sec < 1:
+                    return
+                spent = time.time() - t0
+                left = spent / sec * (total - sec)
+                eta = f", taxminan {max(1, round(left / 60))} daqiqa qoldi" if spent > 20 else ""
+                st.soon(f"✂️ Sahna kesilmoqda: {int(sec * 100 / total)}%{eta}")
+
+            await video.render_shot(job.movie, start, total_frames, cv, cb, job.has_audio, ov, maxrate, job.out_px,
+                                    grade=False, progress=progress)
+            log.info("oddiy video: %.1f–%.1f (%.1fs), %.0fs", start, end, total, time.time() - t0)
+        p.update(concat=cv, bg=cb, total=total, scene=(start, end), nima=cand.get("nima") or "",
+                 izoh=hide_title(cand.get("izoh") or "", job), square=None)
+        await finish_plain(job, job.layout, st)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.wait_for(st.set("⏹ Bu yig‘ish to‘xtatildi.", force=True), 10)
+        except Exception:
+            pass
+        raise
+    except Exception as e:
+        log.exception("oddiy video xato")
+        await st.set(f"❌ Oddiy videoni yasashda xatolik: {short_err(e)}", force=True)
+    finally:
+        job.busy = None
+
+
+async def finish_plain(job, layout, st=None):
+    """Oddiy video: qo'shiqni qo'shadi (kerak bo'lsa 9:16 variantini ham yasaydi) va yuboradi."""
+    job.busy = "plain"
+    job.mode = "plain"
+    p = job.plain
+    try:
+        if st is None:
+            st = Status(job.chat_id, (await bot.send_message(job.chat_id, "🎞 Video tayyorlanmoqda…")).message_id)
+        await st.set("🎵 Qo‘shiq qo‘shilmoqda…", force=True)
+        mus = None
+        if not (p.get("square") and os.path.exists(p["square"])):
+            mus = await ensure_music(job, f"{p.get('nima') or ''} {job.summary or ''}".strip() or None)
+        async with HEAVY:
+            t0 = time.time()
+            if not (p.get("square") and os.path.exists(p["square"])):
+                sq = os.path.join(job.dir, "oddiy_1x1.mp4")
+                await video.plain_mux(p["concat"], p["bg"], p["total"], sq, music=mus, size=job.out_px)
+                p["square"], p["music_name"] = sq, (mus["name"] if mus else "")
+            out, w, h = p["square"], job.out_px, job.out_px
+            if layout == "vertical":
+                out = os.path.join(job.dir, "oddiy_9x16.mp4")
+                if not os.path.exists(out) or os.path.getmtime(out) < os.path.getmtime(p["square"]):
+                    await st.set("📐 9:16 variant tayyorlanmoqda…", force=True)
+                    await video.make_vertical(p["square"], out, p["total"], job.out_px, plain=True)
+                w, h, _ = video.vertical_dims(job.out_px)
+            log.info("oddiy yakuniy %s %.0fs", layout, time.time() - t0)
+        job.layout = layout
+        a, b = p["scene"]
+        note = f"✅ Oddiy video tayyor ({fmt_sec(p['total'])})\n🎞 Sahna: {gemini.fmt_ts(a)} – {gemini.fmt_ts(b)}"
+        if p.get("music_name"):
+            note += f"\n🎵 Qo‘shiq: {esc(p['music_name'])}"
+        other = ("📐 9:16 (Reels)", "v916:p") if layout == "square" else ("⬛ 1:1", "v11:p")
+        rows = [[other, ("🎞 Boshqa sahna", "pnext")]]
+        if p.get("music_name"):
+            rows.append([("🎵 Boshqa qo‘shiq", "mnext:p"), ("🔇 Qo‘shiqsiz", "mnone:p")])
+        elif job.no_music:
+            rows.append([("🎵 Qo‘shiq qo‘shish", "mback:p")])
+        if os.path.getsize(out) > 49 * 1024 * 1024 and BIG is not None:
+            await BIG.send_video(job.chat_id, out, p["total"], w, h, hint_msg_id=job.msg_id)
+            await bot.send_message(job.chat_id, note, reply_markup=kb(*rows))
+        else:
+            await bot.send_video(job.chat_id, FSInputFile(out, filename=os.path.basename(out)),
+                                 duration=int(round(p["total"])), width=w, height=h,
+                                 supports_streaming=True, caption=note,
+                                 reply_markup=kb(*rows), request_timeout=900)
+        await st.delete()
+        cap = insta_caption(job, p.get("izoh"))
+        if cap:
+            await bot.send_message(job.chat_id, "📝 <b>Instagram uchun tavsif</b> (bosib nusxalang):\n\n"
+                                   f"<pre>{esc(cap)[:3800]}</pre>")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.exception("oddiy finish xato")
+        if st:
+            await st.set(f"❌ Video tayyorlashda xatolik: {short_err(e)}", force=True)
+    finally:
+        job.busy = None
+        job.last = time.time()
+
+
 # ---------------- Sozlamalar ----------------
 
 async def get_len(chat_id):
@@ -672,7 +894,7 @@ def len_label(sec):
 
 # ---------------- Musiqa ----------------
 
-async def ensure_music(job):
+async def ensure_music(job, text=None):
     """Videoga musiqa tanlaydi (kutubxona bo'sh yoki o'chirilgan bo'lsa — musiqasiz). Xato videoni to'xtatmaydi."""
     if job.no_music:
         return None
@@ -682,7 +904,7 @@ async def ensure_music(job):
             return None
         song = music.find(lib, job.music_id) if job.music_id else None
         if song is None:
-            text = " ".join(s["matn"] for s in (job.script or []))
+            text = text or " ".join(s["matn"] for s in (job.script or []))
             song = await music.pick(gem, HTTP, lib, job.title or job.name or "", text)
             if not song:
                 return None
@@ -694,7 +916,7 @@ async def ensure_music(job):
         if await music.ensure_best(path, song, MUSIC_DIR):
             music.save_soon(bot, job.chat_id)
         return {"path": path, "start": music.music_start(song), "name": song.get("name", "qo‘shiq"),
-                "gain_db": music.TARGET_RMS - float(song.get("rms", -20))}
+                "gain_db": music.TARGET_RMS - float(song.get("rms", -20)), "rms": float(song.get("rms", -20))}
     except Exception as e:
         log.warning("musiqa qo'shilmadi: %r", e)
         return None
@@ -892,6 +1114,8 @@ WELCOME = (
     "2) Kino nomini va kodini yozasiz.\n"
     "3) Men hikoya matnini yozib beraman — uni o‘qib, <b>ovozli xabar</b> yuborasiz.\n"
     "4) Sahnalarni qirqib, ovozingiz bilan tayyor videoni yuboraman.\n\n"
+    "🎞 Ovozsiz video kerak bo‘lsa — matn tagidagi «Oddiy video» tugmasi: kinoning eng qiziq sahnasini "
+    "(45–120 soniya) effektsiz kesib, mos qo‘shiq bilan yasayman.\n"
     "🎵 Qo‘shiq (mp3) yuborsangiz, saqlab qo‘yaman va har videoga mosini o‘zim tanlayman.\n"
     "🤖 Ovozni o‘zingiz yozmasangiz, matn tagidagi «ElevenLabs ovozida o‘qit» tugmasini bosing (/ovoz — diktor).\n\n"
     "Buyruqlar: /uzunlik — video uzunligi, /musiqa — qo‘shiqlar ro‘yxati, /kod 125 — kodni o‘zgartirish, "
@@ -1225,17 +1449,19 @@ async def on_voice_choice(c: CallbackQuery):
         await start_render(job)
 
 
-@dp.callback_query(F.data.in_({"mnext", "mnone", "mback"}))
+@dp.callback_query(F.data.in_({"mnext", "mnone", "mback", "mnext:p", "mnone:p", "mback:p"}))
 async def on_music_choice(c: CallbackQuery):
     await c.answer()
+    action, _, kind = c.data.partition(":")
+    plain = kind == "p"
     job = JOBS.get(c.from_user.id)
-    if not job or not allowed(c.from_user.id) or not (job.concat and job.timing and os.path.exists(job.concat)):
+    if not job or not allowed(c.from_user.id) or not (plain_ready(job) if plain else story_ready(job)):
         return await bot.send_message(c.from_user.id, "Bu ish eskirgan. Kinoni qaytadan yuboring 🎬")
     if job.busy or (job.task and not job.task.done()):
         return await bot.send_message(job.chat_id, "⏳ Hozir ishlayapman, biroz kuting…")
-    if c.data == "mnone":
+    if action == "mnone":
         job.no_music = True
-    elif c.data == "mback":
+    elif action == "mback":
         job.no_music, job.music_id = False, None
     else:
         lib = await music.load(bot, job.chat_id, WORK_DIR)
@@ -1246,11 +1472,15 @@ async def on_music_choice(c: CallbackQuery):
         lib["last"] = song["id"]
         music.save_soon(bot, job.chat_id)
         job.no_music, job.music_id = False, song["id"]
-    job.square = None
-    job.task = asyncio.create_task(finish(job, job.layout))
+    if plain:
+        job.plain["square"] = None
+        job.task = asyncio.create_task(finish_plain(job, job.layout))
+    else:
+        job.square = None
+        job.task = asyncio.create_task(finish(job, job.layout))
 
 
-@dp.callback_query(F.data.in_({"regen", "retry", "v916", "v11"}))
+@dp.callback_query(F.data.in_({"regen", "retry", "v916", "v11", "v916:p", "v11:p", "plain", "pnext"}))
 async def on_button(c: CallbackQuery):
     await c.answer()
     job = JOBS.get(c.from_user.id)
@@ -1267,10 +1497,21 @@ async def on_button(c: CallbackQuery):
         if not job.moments:
             return await bot.send_message(job.chat_id, "⏳ Matn hali yozilmoqda…")
         job.task = asyncio.create_task(regen(job))
+    elif c.data in ("v916:p", "v11:p"):
+        if not plain_ready(job):
+            return await bot.send_message(job.chat_id, "Avval «🎵 Oddiy video» ni bosing.")
+        job.task = asyncio.create_task(finish_plain(job, "vertical" if c.data == "v916:p" else "square"))
     elif c.data in ("v916", "v11"):
-        if not (job.concat and os.path.exists(job.concat) and job.bg and job.timing):
+        if not story_ready(job):
             return await bot.send_message(job.chat_id, "Avval ovozli xabar yuboring 🎙")
         job.task = asyncio.create_task(finish(job, "vertical" if c.data == "v916" else "square"))
+    elif c.data in ("plain", "pnext"):
+        if not (job.movie and job.moments):
+            return await bot.send_message(job.chat_id, "⏳ Kino hali tahlil qilinyapti, biroz kuting…")
+        if c.data == "plain" and plain_ready(job):
+            job.task = asyncio.create_task(finish_plain(job, job.layout))  # tayyori bor — qaytadan yuboramiz
+        else:
+            job.task = asyncio.create_task(plain_job(job, new=c.data == "pnext"))
 
 
 # ---------------- Server ----------------

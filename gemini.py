@@ -334,11 +334,128 @@ class Gemini:
                  for c in (data.get("qahramonlar") or []) if str(c.get("ism", "")).strip()]
         return {"moments": res, "summary": str(data.get("qisqacha") or "").strip(), "characters": chars}
 
+    async def pick_scenes(self, session, name, duration, moments, summary="", characters=None, min_len=45,
+                          max_len=120, exclude=()):
+        """Oddiy video uchun 3 ta eng qiziq uzluksiz sahna (eng yaxshisi birinchi)."""
+        skip = min(120.0, duration * 0.05)
+        limit = duration * 0.85
+        parts = [{"text": scenes_prompt(name, duration, moments, summary, characters, min_len, max_len, skip, limit,
+                                        exclude)}]
+        data = await self.generate_json(session, parts, SCENES_SCHEMA, temperature=0.5, timeout=240,
+                                        prefer_strong=True)
+        res = []
+        for it in data.get("sahnalar") or []:
+            a, b = parse_ts(it.get("boshlanish")), parse_ts(it.get("tugash"))
+            if a is None or b is None:
+                continue
+            a = max(skip * 0.5, min(a, duration - min_len - 1))
+            if b - a < min_len:
+                b = a + min_len
+            b = min(b, a + max_len, duration - 1)
+            if b - a < min_len * 0.8:
+                continue
+            res.append({"start": round(a, 2), "end": round(b, 2), "nima": str(it.get("nima") or "").strip(),
+                        "izoh": str(it.get("izoh") or "").strip()})
+        return res
+
     async def write_script(self, session, name, duration, moments, variant=0, target_sec=120, summary="",
                            characters=None, too_short=0):
         parts = [{"text": script_prompt(name, duration, moments, variant, target_sec, summary, characters, too_short)}]
         return await self.generate_json(session, parts, SCRIPT_SCHEMA, temperature=0.9 if variant else 0.75,
                                         timeout=300, prefer_strong=True)
+
+
+SCENES_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "sahnalar": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "boshlanish": {"type": "STRING"},
+                    "tugash": {"type": "STRING"},
+                    "nima": {"type": "STRING"},
+                    "izoh": {"type": "STRING"},
+                },
+                "required": ["boshlanish", "tugash", "nima", "izoh"],
+            },
+        }
+    },
+    "required": ["sahnalar"],
+}
+
+
+def scenes_prompt(name, duration, moments, summary="", characters=None, min_len=45, max_len=120, skip_start=120.0,
+                  limit_end=None, exclude=()):
+    lines = "\n".join(
+        f"{fmt_ts(m['t'])} — {m['voqea']}" + (" [KUCHLI]" if m.get("kuchli") else "") for m in moments
+    )
+    chars = "\n".join(f"- {c['ism']}: {c['kim']}" for c in (characters or [])[:25])
+    limit_end = limit_end or duration * 0.85
+    used = "".join(f"\n- {fmt_ts(a)} – {fmt_ts(b)}" for a, b in exclude)
+    return (
+        "You pick scenes from a movie for viral Uzbek Instagram Reels movie clips.\n"
+        f"Movie: «{name}», length {fmt_ts(duration)}.\n"
+        + (f"Summary of the movie:\n{summary}\n" if summary else "")
+        + (f"Main characters:\n{chars}\n" if chars else "")
+        + "Key moments of the movie with timestamps (movie time):\n"
+        f"{lines}\n\n"
+        "The clip is ONE continuous piece of the movie, shown as it is with its original sound (dialogue and "
+        "effects), only quiet background music is added. Choose the 3 best different scenes for such a clip, the "
+        "best first.\n"
+        "Rules:\n"
+        f"- Each scene is continuous and {min_len}–{max_len} seconds long; choose the natural length of the scene.\n"
+        "- It must grip a viewer who has never seen the movie and be understandable on its own: a clear situation "
+        "with tension — a chase, a fight, a scary moment, a sharp confrontation, an emotional or funny dialogue, a "
+        "shocking discovery. Prefer moments marked [KUCHLI].\n"
+        "- Start right before the action or conversation begins, never in the middle of a sentence; end at a natural "
+        "point, ideally a cliffhanger that makes people want to watch the movie.\n"
+        f"- Only from {fmt_ts(skip_start)} to {fmt_ts(limit_end)}: no logos or credits, and never reveal the ending "
+        "or the final twist.\n"
+        "- No scenes with sex or nudity, and no extremely gory scenes (Instagram rules).\n"
+        "- The 3 scenes must not overlap each other"
+        + (" or these already used parts:" + used if used else "")
+        + ".\n"
+        "For each scene give \"boshlanish\" and \"tugash\" (H:MM:SS, movie time), \"nima\" — 1 sentence in Uzbek "
+        "(Latin script): what happens in it, and \"izoh\" — an intriguing Instagram caption in Uzbek for this clip, "
+        "1–2 short sentences, 1–2 fitting emojis allowed. The caption must NOT contain the movie title, the year, actor "
+        "names or anything that reveals which movie it is; no hashtags."
+    )
+
+
+REFINE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {"boshlanish": {"type": "NUMBER"}, "tugash": {"type": "NUMBER"}},
+    "required": ["boshlanish", "tugash"],
+}
+
+
+async def refine_scene(gem, session, audio_path, name, offset, what, min_len=45, max_len=120):
+    """Sahna atrofidagi ovozni eshitib, uning aniq boshlanishi va oxirini topadi (soniya, shu fayl boshidan)."""
+    info = await gem.upload(session, audio_path, "audio/mpeg")
+    try:
+        prompt = (
+            f"This audio is a part of the movie «{name}» (it starts at movie time {fmt_ts(offset)}). "
+            f"It contains this scene: «{what}».\n"
+            "We cut this scene out as one continuous Instagram clip with its original sound. Find exactly:\n"
+            "- \"boshlanish\": where the scene should start — right before its first line or before the action "
+            "starts, never in the middle of a sentence or a word;\n"
+            "- \"tugash\": where it should end — right after a line ends or after a strong dramatic moment "
+            "(a cliffhanger is great), never in the middle of a sentence.\n"
+            f"The clip must be {min_len}–{max_len} seconds long. Give both times in seconds from the start of THIS "
+            "audio file (0.1 s precision)."
+        )
+        parts = [{"file_data": {"mime_type": info.get("mimeType") or "audio/mpeg", "file_uri": info["uri"]}},
+                 {"text": prompt}]
+        data = await gem.generate_json(session, parts, REFINE_SCHEMA, temperature=0.1, timeout=180)
+    finally:
+        await gem.delete(session, info.get("name"))
+    try:
+        a, b = float(data.get("boshlanish")), float(data.get("tugash"))
+    except (TypeError, ValueError):
+        return None
+    return (a, b) if b > a >= 0 else None
 
 
 ALIGN_SCHEMA = {

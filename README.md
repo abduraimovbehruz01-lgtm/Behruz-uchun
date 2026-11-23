@@ -18,6 +18,18 @@ Matnni o‘zgartirmoqchi bo‘lsangiz, yangi matnni yozib yuborasiz. «🔄 Bosh
 
 Buyruqlar: `/start`, `/bekor`, `/kod 125`.
 
+## Oddiy video (ovozsiz, musiqali)
+
+Matn tagidagi yoki tayyor video tagidagi «🎵 Oddiy video» tugmasi:
+
+1. Gemini kinoning eng qiziq uzluksiz sahnasini tanlaydi: 45–120 soniya (uzunligini sahnaning o‘ziga qarab), oxirini oshkor qilmaydi, kino boshidagi logotiplar va oxiridagi qismdan olmaydi.
+2. Sahna atrofidagi ovozni eshitib, aniq boshi va oxirini topadi: gap o‘rtasida boshlanmaydi va tugamaydi. Kesish joyi kadr almashgan, jim nuqtaga yopishtiriladi.
+3. Video effektsiz: rang berilmaydi, vinyetka yo‘q, kino qanday bo‘lsa shunday (kvadrat qilib qirqiladi). Pastda `BehruzFilm`, oxirgi 4,5 soniyada «@behruzfilmbot / KOD: 125».
+4. Ovoz: kinoning o‘z ovozi baland, kutubxonadan mos qo‘shiq orqada past (eng qiziq joyidan boshlanadi). Kino ovozi baland joylarda qo‘shiq biroz pasayadi.
+5. Instagram uchun alohida tavsif shu sahnaga qarab yoziladi.
+
+Tugmalar: «🎞 Boshqa sahna», «🎵 Boshqa qo‘shiq», «🔇 Qo‘shiqsiz», «📐 9:16» (oddiy videoda tepasi va pasti qora, xiralashtirilgan fon yo‘q).
+
 ## Sozlamalar (Render → Environment)
 
 | Nomi | Nima | Majburiy |
@@ -32,6 +44,8 @@ Buyruqlar: `/start`, `/bekor`, `/kod 125`.
 | `CTA_TEXT` | Oxirgi gap, `{kod}` o‘rniga kod qo‘yiladi | yo‘q |
 | `GEMINI_MODEL` | Modellar ro‘yxati, vergul bilan (birinchisi ishlamasa keyingisi) | yo‘q |
 | `FINAL_PRESET` | x264 tezligi: `veryfast` (standart) yoki `superfast` | yo‘q |
+| `PLAIN_MIN_SEC`, `PLAIN_MAX_SEC` | Oddiy video uzunligi chegarasi (45 va 120 soniya) | yo‘q |
+| `PLAIN_MUSIC_DB` | Oddiy videoda qo‘shiq kino ovozidan necha dB past (standart −9) | yo‘q |
 
 ## Server
 
