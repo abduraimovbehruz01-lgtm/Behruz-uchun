@@ -1,5 +1,6 @@
 """Gemini: kinoning ovozini «eshitib» muhim lahzalarni topish va o'zbekcha hikoya matnini yozish."""
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -9,6 +10,9 @@ import time
 import aiohttp
 
 log = logging.getLogger("gemini")
+# Bot ish holati xabariga yozish uchun (masalan «Gemini band, kutyapman…»): bot vazifa ichida o'rnatadi
+NOTIFY = contextvars.ContextVar("gemini_notify", default=None)
+WAIT_MAX = float(os.environ.get("GEMINI_WAIT_MAX", "600"))  # hamma modellar band bo'lsa, jami shuncha kutib turamiz
 
 BASE = os.environ.get("GEMINI_BASE", "https://generativelanguage.googleapis.com").rstrip("/")
 DEFAULT_MODELS = "gemini-3.8-flash,gemini-flash-latest,gemini-3.5-flash,gemini-4-hydrogen,gemini-3.5-flash-lite,gemini-flash-lite-latest"
@@ -18,9 +22,32 @@ SAFETY = [{"category": c, "threshold": "BLOCK_NONE"} for c in (
 
 
 class GeminiError(Exception):
-    def __init__(self, status, msg):
+    def __init__(self, status, msg, retry_after=None, per_day=False, retryable=None):
         super().__init__(msg)
         self.status = status
+        self.retry_after = retry_after    # Google aytgan kutish vaqti (soniya), bo'lsa
+        self.per_day = per_day            # kunlik bepul limit tugagan
+        self.retryable = status in (429, 500, 502, 503, 504) if retryable is None else retryable
+
+
+def _err_details(txt):
+    """Google xato javobidan: necha soniya kutish kerakligi va kunlik limit tugaganmi."""
+    retry, per_day = None, False
+    try:
+        err = (json.loads(txt) or {}).get("error") or {}
+        for d in err.get("details") or []:
+            rd = d.get("retryDelay")
+            if rd:
+                try:
+                    retry = float(str(rd).rstrip("s"))
+                except ValueError:
+                    pass
+            for v in d.get("violations") or []:
+                if "PerDay" in str(v.get("quotaId") or ""):
+                    per_day = True
+    except (ValueError, AttributeError, TypeError):
+        pass
+    return retry, per_day
 
 
 def fmt_ts(sec):
@@ -254,7 +281,8 @@ class Gemini:
                                 json=body, timeout=aiohttp.ClientTimeout(total=timeout)) as r:
             txt = await r.text()
             if r.status != 200:
-                raise GeminiError(r.status, re.sub(r"\s+", " ", txt)[:300])
+                retry, per_day = _err_details(txt)
+                raise GeminiError(r.status, re.sub(r"\s+", " ", txt)[:300], retry_after=retry, per_day=per_day)
         j = json.loads(txt)
         cands = j.get("candidates") or []
         if not cands:
@@ -267,9 +295,32 @@ class Gemini:
         return text
 
     async def generate_json(self, session, parts, schema, temperature=0.7, timeout=480, prefer_strong=False,
-                            budget=900):
-        """Modellarni navbat bilan sinaydi. prefer_strong=True bo'lsa, kuchli modellar band (503/429) bo'lganda
-        biroz kutib ularni yana bir bor sinaydi va faqat keyin yengil (lite) modelga o'tadi — sifat uchun."""
+                            budget=900, max_wait=None):
+        """Modellarni navbat bilan sinaydi. Hammasi band bo'lsa (429/503) — darrov xato bermaydi: kutib (Google
+        aytgan vaqtcha yoki 30–120 s), yana urinadi; jami max_wait soniyagacha."""
+        max_wait = WAIT_MAX if max_wait is None else max_wait
+        waited, rnd = 0.0, 0
+        while True:
+            try:
+                return await self._round(session, parts, schema, temperature, timeout, prefer_strong, budget)
+            except GeminiError as e:
+                if not e.retryable or waited >= max_wait:
+                    raise
+                rnd += 1
+                delay = min(max(e.retry_after or 0.0, 30.0 * rnd), 120.0, max_wait - waited)
+                log.info("gemini: hamma modellar band — %.0fs kutamiz (%d-marta)", delay, rnd)
+                cb = NOTIFY.get()
+                if cb:
+                    try:
+                        cb(f"⏳ Gemini (Google) hozir band. {max(1, round(delay))} soniyadan keyin o‘zim yana urinaman "
+                           f"({rnd}-marta)…")
+                    except Exception:
+                        pass
+                await asyncio.sleep(delay)
+                waited += delay
+
+    async def _round(self, session, parts, schema, temperature, timeout, prefer_strong, budget):
+        """Bitta aylana: har modelni bir marta (prefer_strong bo'lsa — kuchlilarni 20 s dan keyin yana bir marta)."""
         errors = []
         order = self._order()
         if prefer_strong:
@@ -280,6 +331,8 @@ class Gemini:
             plan = order
         t_start = time.time()
         tried_busy = set()
+        busy = hard = day = 0
+        retry_after = None
         for model in plan:
             if model == "…":
                 if not tried_busy or time.time() - t_start > budget * 0.6:
@@ -298,16 +351,26 @@ class Gemini:
                 log.warning("gemini %s xato: %s %s", model, e.status, str(e)[:200])
                 errors.append(f"{model}: {e.status} {str(e)[:120]}")
                 if e.status in (401, 403) and "PERMISSION" not in str(e).upper():
+                    hard += 1
                     break  # kalit noto'g'ri — boshqa modelni sinash befoyda
                 if e.status == 404:
                     self.dead[model] = time.time() + 6 * 3600
-                if e.status in (429, 500, 502, 503, 504):
+                if e.status == 429 and e.per_day:
+                    self.dead[model] = time.time() + 3600  # bu modelning kunlik limiti tugagan — bir soat tegmaymiz
+                    day += 1
+                elif e.status in (429, 500, 502, 503, 504):
                     tried_busy.add(model)
+                    busy += 1
+                    if e.retry_after:
+                        retry_after = max(retry_after or 0.0, e.retry_after)
             except (asyncio.TimeoutError, aiohttp.ClientError, ValueError, KeyError) as e:
                 log.warning("gemini %s: %r", model, e)
                 errors.append(f"{model}: {type(e).__name__}")
                 tried_busy.add(model)
-        raise GeminiError(0, "; ".join(errors)[-700:] or "modellar javob bermadi")
+                busy += 1
+        all_day = day > 0 and busy == 0 and hard == 0
+        raise GeminiError(0, "; ".join(errors)[-700:] or "modellar javob bermadi", retry_after=retry_after,
+                          per_day=all_day, retryable=busy > 0 and hard == 0)
 
     async def scene_log(self, session, audio_path, mime, name, k, n, start, length):
         info = await self.upload(session, audio_path, mime)
@@ -343,7 +406,7 @@ class Gemini:
         limit = duration * 0.85
         parts = [{"text": scenes_prompt(name, duration, moments, summary, characters, min_len, max_len, skip, limit,
                                         exclude)}]
-        data = await self.generate_json(session, parts, SCENES_SCHEMA, temperature=0.5, timeout=240,
+        data = await self.generate_json(session, parts, SCENES_SCHEMA, temperature=0.5, timeout=240, max_wait=180,
                                         prefer_strong=True)
         res = []
         for it in data.get("sahnalar") or []:
@@ -450,7 +513,7 @@ async def refine_scene(gem, session, audio_path, name, offset, what, min_len=45,
         )
         parts = [{"file_data": {"mime_type": info.get("mimeType") or "audio/mpeg", "file_uri": info["uri"]}},
                  {"text": prompt}]
-        data = await gem.generate_json(session, parts, REFINE_SCHEMA, temperature=0.1, timeout=180)
+        data = await gem.generate_json(session, parts, REFINE_SCHEMA, temperature=0.1, timeout=180, max_wait=60)
     finally:
         await gem.delete(session, info.get("name"))
     try:
@@ -484,7 +547,7 @@ async def align_voice(gem, session, audio_path, sentences):
                   "saying it. Listen carefully; times must increase. Skip a sentence only if it was not read at all.")
         parts = [{"file_data": {"mime_type": info.get("mimeType") or "audio/mpeg", "file_uri": info["uri"]}},
                  {"text": prompt}]
-        data = await gem.generate_json(session, parts, ALIGN_SCHEMA, temperature=0.0, timeout=120)
+        data = await gem.generate_json(session, parts, ALIGN_SCHEMA, temperature=0.0, timeout=120, max_wait=60)
     finally:
         await gem.delete(session, info.get("name"))
     res = {}

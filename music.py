@@ -186,7 +186,7 @@ async def analyse(gem, http, path, workdir, key):
         try:
             parts = [{"file_data": {"mime_type": up.get("mimeType") or "audio/mpeg", "file_uri": up["uri"]}},
                      {"text": MOOD_PROMPT}]
-            data = await gem.generate_json(http, parts, MOOD_SCHEMA, temperature=0.2, timeout=180)
+            data = await gem.generate_json(http, parts, MOOD_SCHEMA, temperature=0.2, timeout=180, max_wait=120)
         finally:
             await gem.delete(http, up.get("name"))
         info.update({
@@ -227,7 +227,8 @@ async def pick(gem, http, lib, title, script_text, exclude=None):
                   "Choose the option whose mood best fits this movie and narration. If several fit equally well, "
                   "prefer one used fewer times and not the one used in the last video. "
                   "Answer with \"tanlov\" (the option number) and a short Uzbek \"sabab\".")
-        data = await gem.generate_json(http, [{"text": prompt}], PICK_SCHEMA, temperature=0.3, timeout=90)
+        data = await gem.generate_json(http, [{"text": prompt}], PICK_SCHEMA, temperature=0.3, timeout=90,
+                                       max_wait=30)
         k = int(data.get("tanlov") or 0) - 1
         if 0 <= k < len(songs):
             return songs[k]

@@ -188,6 +188,17 @@ def short_err(e):
     return esc(s[:350])
 
 
+def gemini_err(e):
+    """Gemini xatosini tushunarli qilib aytadi."""
+    if isinstance(e, gemini.GeminiError):
+        if e.per_day:
+            return ("Gemini’ning bugungi bepul limiti tugadi. U Toshkent vaqti bilan tushga yaqin (12:00–13:00) "
+                    "yangilanadi.")
+        if e.retryable:
+            return "Gemini (Google) hozir juda band — 10 daqiqa kutsam ham javob bermadi. Birozdan keyin qayta urining."
+    return short_err(e)
+
+
 def human_mb(n):
     return f"{n / 1024 / 1024:.0f} MB" if n < 1024 ** 3 else f"{n / 1024 ** 3:.2f} GB"
 
@@ -315,8 +326,9 @@ def insta_caption(job, text=None):
     if job.code:
         cta = CAPTION_CTA.format(kod=job.code)
         parts.append(cta.replace("kinoni", "animeni") if job.kind == "anime" else cta)
-    if job.tags:
-        parts.append(" ".join(job.tags))
+    tags = job.tags or clean_tags([], job)
+    if tags:
+        parts.append(" ".join(tags))
     return "\n\n".join(parts)
 
 
@@ -360,7 +372,9 @@ async def remember_job(job):
         lib = await music.load(bot, job.chat_id, WORK_DIR)
         meta = {"msg_id": job.msg_id, "file_id": job.file_id, "size": job.size, "file_name": job.file_name,
                 "name": job.name, "code": job.code, "t": int(time.time())}
-        if job.script:  # matn va lahzalar ham saqlanadi — davom ettirishda Gemini qayta ishlamaydi
+        if job.moments:  # Gemini topgan lahzalar — davom ettirishda kinoni qayta eshittirish shart emas
+            meta.update(moments=job.moments, summary=job.summary, characters=job.characters)
+        if job.script:  # matn ham saqlanadi — davom ettirishda Gemini qayta ishlamaydi
             meta.update(script=job.script, moments=job.moments, summary=job.summary, characters=job.characters,
                         title=job.title, caption=job.caption, tags=job.tags, target_sec=job.target_sec,
                         kind=job.kind, kind_manual=job.kind_manual, music_id=job.music_id, no_music=job.no_music)
@@ -387,6 +401,9 @@ async def resume_job(uid, chat_id):
     job = Job(uid=uid, chat_id=chat_id, dir=d, msg_id=meta["msg_id"], file_id=meta.get("file_id", ""),
               size=int(meta.get("size") or 0), file_name=meta.get("file_name") or "kino.mp4",
               name=meta.get("name"), code=meta.get("code"))
+    if meta.get("moments"):
+        job.moments = meta["moments"]
+        job.summary, job.characters = meta.get("summary") or "", meta.get("characters") or []
     if meta.get("script"):
         job.script, job.moments = meta["script"], meta.get("moments") or []
         job.summary, job.characters = meta.get("summary") or "", meta.get("characters") or []
@@ -459,6 +476,7 @@ async def download_movie(job):
 async def analyse(job):
     """Kinoni yuklash (kerak bo'lsa) → ovozni ajratish → Gemini lahzalar → matn → foydalanuvchiga yuborish."""
     st = job.status
+    gemini.NOTIFY.set(st.soon)
     try:
         if not job.movie:
             await st.set("⬇️ Yuklab olinmoqda…", force=True)
@@ -494,6 +512,7 @@ async def analyse(job):
                 raise RuntimeError("Gemini kinodan yetarli voqea topmadi")
             moments.sort(key=lambda m: m["t"])
             job.moments, job.summary, job.characters = moments, " ".join(summaries), list(chars.values())
+            asyncio.create_task(remember_job(job))
             for cpath, *_ in job.chunks or []:
                 try:
                     os.remove(cpath)  # diskni bo'shatish: lahzalar topildi, ovoz bo'laklari endi kerak emas
@@ -514,8 +533,15 @@ async def analyse(job):
         raise
     except Exception as e:
         log.exception("analyse xato")
-        await st.set(f"❌ Xatolik: {short_err(e)}", force=True)
-        await bot.send_message(job.chat_id, "Qayta urinib ko‘rasizmi?", reply_markup=kb([("🔁 Qayta urinish", "retry")]))
+        await st.set(f"❌ Xatolik: {gemini_err(e)}", force=True)
+        rows = [[("🔁 Qayta urinish", "retry")]]
+        if job.movie and job.moments and not job.script:
+            rows.append([("🎵 Oddiy video (ovozsiz)", "plain")])  # unga hikoya matni kerak emas
+            text = ("Hikoya matnini yozib bo‘lmadi. «🔁 Qayta urinish» ni bosing yoki hozircha ovozsiz "
+                    "«🎵 Oddiy video» yasating.")
+        else:
+            text = "Qayta urinib ko‘rasizmi?"
+        await bot.send_message(job.chat_id, text, reply_markup=kb(*rows))
 
 
 async def send_script(job):
@@ -535,6 +561,7 @@ async def send_script(job):
 
 async def regen(job):
     st = Status(job.chat_id, (await bot.send_message(job.chat_id, "✍️ Yangi matn yozilmoqda…")).message_id)
+    gemini.NOTIFY.set(st.soon)
     try:
         job.variant += 1
         job.target_sec = await get_len(job.chat_id)
@@ -547,7 +574,7 @@ async def regen(job):
         raise
     except Exception as e:
         log.exception("regen xato")
-        await st.set(f"❌ Xatolik: {short_err(e)}", force=True)
+        await st.set(f"❌ Xatolik: {gemini_err(e)}", force=True)
 
 
 # ---------------- 2-bosqich: ovoz kelgach videoni yig'ish ----------------
@@ -790,6 +817,7 @@ async def plain_job(job, new=False):
     p = job.plain
     st = Status(job.chat_id, (await bot.send_message(
         job.chat_id, "🎞 Kinoning eng qiziq sahnasi qidirilmoqda…")).message_id)
+    gemini.NOTIFY.set(st.soon)
     try:
         cands = p.get("cands") or []
         idx = p.get("idx", -1) + 1 if new or not cands else max(0, p.get("idx", 0))
@@ -850,7 +878,7 @@ async def plain_job(job, new=False):
         raise
     except Exception as e:
         log.exception("oddiy video xato")
-        await st.set(f"❌ Oddiy videoni yasashda xatolik: {short_err(e)}", force=True)
+        await st.set(f"❌ Oddiy videoni yasashda xatolik: {gemini_err(e)}", force=True)
     finally:
         job.busy = None
 
