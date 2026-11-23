@@ -15,24 +15,15 @@ try { dns.setDefaultResultOrder('ipv4first'); } catch (e) { /* eski Node */ }
 const CURVES = 'X25519:P-256:P-384';
 try { tls.DEFAULT_ECDH_CURVE = CURVES; } catch (e) { /* jim */ }
 
-const agentHttps = new https.Agent({ keepAlive: true, maxSockets: 25, family: 4, ecdhCurve: CURVES });
-const agentHttp = new http.Agent({ keepAlive: true, maxSockets: 25 });
 
 function request(urlStr, { method = 'GET', headers = {}, body = null, timeout = 30000 } = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlStr);
     const isHttps = url.protocol === 'https:';
-    const opts = {
-      protocol: url.protocol,
-      hostname: url.hostname,
-      port: url.port || (isHttps ? 443 : 80),
-      path: url.pathname + url.search,
-      method,
-      headers,
-      agent: isHttps ? agentHttps : agentHttp,
-    };
+    // Standart agent ishlatiladi (Render’da o‘zimizning agent bilan so‘rov osilib qolgan)
+    const opts = { method, headers };
     if (isHttps) opts.family = 4;
-    const req = (isHttps ? https : http).request(opts, (res) => {
+    const req = (isHttps ? https : http).request(url, opts, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));
