@@ -79,7 +79,7 @@ async function main() {
   for (let i = 0; ; i += 1) {
     const t0 = Date.now();
     try {
-      const me = await tg.call('getMe');
+      const me = await tg.call('getMe', {}, null, { retry: false });
       core.me.id = me.id;
       core.me.username = me.username;
       startError = '';
@@ -92,7 +92,8 @@ async function main() {
         return;
       }
       startError = `Telegram bilan aloqa yo‘q: ${e.message}`;
-      const wait = e.retryAfter ? (e.retryAfter + 5) * 1000 : Math.min(60000, 5000 * (i + 1));
+      // Telegram cheklov qo‘ygan bo‘lsa, so‘rovlar bilan uni uzaytirmaslik uchun uzoqroq kutamiz
+      const wait = e.retryAfter ? (e.retryAfter + 10) * 1000 : 45000;
       console.error(`[bot] ${startError} — ${Math.round(wait / 1000)} soniyadan keyin qayta urinamiz`);
       await sleep(wait);
     }

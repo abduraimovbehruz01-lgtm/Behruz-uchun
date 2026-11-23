@@ -65,7 +65,8 @@ function multipart(params, files) {
 
 const base = () => `${cfg.TG_API}/bot${cfg.BOT_TOKEN}`;
 
-async function call(method, params = {}, files = null) {
+async function call(method, params = {}, files = null, opt = {}) {
+  const tries = opt.retry === false ? 0 : 2;
   for (let attempt = 0; ; attempt++) {
     let res;
     try {
@@ -86,7 +87,7 @@ async function call(method, params = {}, files = null) {
         timeout: method === 'getUpdates' ? 75000 : (files ? 60000 : 25000),
       });
     } catch (e) {
-      if (attempt < 2) { await sleep(800 * (attempt + 1)); continue; }
+      if (attempt < tries) { await sleep(800 * (attempt + 1)); continue; }
       const err = new Error(`${method}: ${e.message}`);
       err.network = true;
       throw err;
@@ -95,8 +96,8 @@ async function call(method, params = {}, files = null) {
     try { j = JSON.parse(res.body.toString('utf8')); } catch (e) { j = { ok: false, error_code: res.status, description: `HTTP ${res.status}` }; }
     if (j.ok) return j.result;
     const ra = j.parameters && j.parameters.retry_after;
-    if (j.error_code === 429 && ra && ra <= 35 && attempt < 3) { await sleep(ra * 1000 + 2000); continue; }
-    if (j.error_code >= 500 && attempt < 2) { await sleep(1000); continue; }
+    if (j.error_code === 429 && ra && ra <= 35 && attempt < tries + 1) { await sleep(ra * 1000 + 2000); continue; }
+    if (j.error_code >= 500 && attempt < tries) { await sleep(1000); continue; }
     const err = new Error(`${method}: ${j.description}`);
     err.code = j.error_code;
     err.desc = j.description || '';
