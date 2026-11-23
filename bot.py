@@ -93,6 +93,10 @@ class Job:
     voice: str | None = None
     voice_parts: list = field(default_factory=list)   # [(fayl, soniya)] — ovoz bir nechta xabarda kelsa
     voice_anchors: dict | None = None                 # ElevenLabs bergan gap boshlanish vaqtlari
+    expect_parts: int = 0                              # «1/2», «2/2» izohlaridan: nechta qism kutilyapti
+    render_parts: list | None = None                   # joriy yig'ishda ishlatilgan ovoz qismlari
+    render_started: float = 0.0
+    part_msg: dict = field(default_factory=dict)       # ovoz fayli → Telegram xabar raqami (tartib va takrorni bilish)
     voice_timer: asyncio.Task | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     concat: str | None = None
@@ -110,7 +114,9 @@ class Job:
 
 
 JOBS: dict[int, Job] = {}
-PENDING_AUDIO: dict[int, dict] = {}   # «bu diktor ovozimi yoki musiqami?» deb so'ralgan fayllar
+PENDING_AUDIO: dict[int, dict] = {}   # uid → {xabar raqami: fayl} — «diktor ovozimi yoki musiqami?» deb so'ralganlar
+RESTART_WINDOW = 120   # yig'ish boshlanganidan keyin shuncha soniya ichida yana qism kelsa — qaytadan yig'amiz
+PART_WAIT = 120        # «1/2» kabi belgi bo'lsa, qolgan qismlarni shuncha soniyagacha kutamiz
 MUSIC_SEM = asyncio.Semaphore(1)      # qo'shiqlar birma-bir tahlil qilinadi
 MUSIC_DIR = os.path.join(WORK_DIR, "music")
 GEMINI_STATUS = "tekshirilmagan"
@@ -574,6 +580,10 @@ async def render(job):
         job.square = None
         await finish(job, job.layout, st)
     except asyncio.CancelledError:
+        try:  # eski holat xabari «qotib» qolmasin
+            await asyncio.wait_for(st.set("⏹ Bu yig‘ish to‘xtatildi.", force=True), 10)
+        except Exception:
+            pass
         raise
     except Exception as e:
         log.exception("render xato")
@@ -737,12 +747,42 @@ def fmt_sec(x):
     return f"{x // 60}:{x % 60:02d}"
 
 
-async def take_voice(job, a):
-    """Diktor ovozini (yoki uning bir qismini) qabul qiladi. Bir necha soniya kutib, yana qism kelmasa — qaror qiladi."""
+PART_RE = re.compile(r"(?<![\d/])(\d{1,2})\s*/\s*(\d{1,2})(?![\d/])")
+
+
+def part_of(text):
+    """«1/2», «2 / 3» kabi belgidan (qism, jami) ni qaytaradi, bo'lmasa None."""
+    m = PART_RE.search(text or "")
+    if m and 1 <= int(m.group(1)) <= int(m.group(2)) <= 10:
+        return int(m.group(1)), int(m.group(2))
+    return None
+
+
+def can_restart(job):
+    """Video yig'ila boshlaganiga hali ko'p bo'lmadimi (kech kelgan qism bilan qaytadan yig'sa bo'ladimi)."""
+    return (job.busy == "render" and job.render_parts is not None
+            and time.time() - job.render_started < RESTART_WINDOW)
+
+
+async def take_voice(job, a, caption=""):
+    """Diktor ovozini (yoki uning bir qismini) qabul qiladi. «1/2» kabi izoh bo'lsa — qolgan qismlarni kutadi.
+    Video yig'ila boshlaganiga ko'p bo'lmagan bo'lsa va yana qism kelsa — hamma qismlar bilan qaytadan yig'adi."""
     async with job.lock:
+        mid = a.get("msg_id") or 0
+        if mid and mid in job.part_msg.values():
+            return  # shu xabar allaqachon olingan (Telegram qayta yuborgan)
+        restarted = False
         if job.busy:
-            await bot.send_message(job.chat_id, "⏳ Video yig‘ilyapti. Tugagach, yangi ovozni yuborishingiz mumkin.")
-            return
+            if not can_restart(job):
+                await bot.send_message(job.chat_id, "⏳ Video yig‘ilyapti. Tugagach, yangi ovozni yuborishingiz mumkin.")
+                return
+            if job.task and not job.task.done():
+                job.task.cancel()
+                await asyncio.gather(job.task, return_exceptions=True)
+            job.busy = None
+            job.voice_parts = list(job.render_parts)
+            job.render_parts = None
+            restarted = True
         path = os.path.join(job.dir, f"voice_{int(time.time() * 1000)}{a.get('ext') or '.ogg'}")
         if (a.get("size") or 0) <= BOT_API_LIMIT:
             await bot.download(a["file_id"], destination=path, timeout=300)
@@ -751,17 +791,30 @@ async def take_voice(job, a):
         else:
             raise RuntimeError("Ovoz fayli juda katta")
         dur = await video.audio_duration(path)
+        part = part_of(caption)
+        if part:
+            job.expect_parts = max(job.expect_parts, part[1])
+        job.part_msg[path] = mid
         job.voice_parts.append((path, dur))
+        job.voice_parts.sort(key=lambda x: job.part_msg.get(x[0], 0))  # yuborilgan tartibda
         job.last = time.time()
+        if restarted:
+            await bot.send_message(job.chat_id, "➕ Ovozning yana bir qismi keldi — videoni hamma qismlar bilan "
+                                                "qaytadan yig‘aman.")
         if job.voice_timer and not job.voice_timer.done():
             job.voice_timer.cancel()
         job.voice_timer = asyncio.create_task(decide_voice(job))
 
 
-async def decide_voice(job, wait=4.0):
+async def decide_voice(job, wait=8.0):
     """Ovoz matnga yetarli bo'lsa — videoni yig'adi, juda qisqa bo'lsa — davomini so'raydi."""
     try:
         await asyncio.sleep(wait)
+        # «2/3» kabi izoh bo'lsa — qolgan qismlarni 2 daqiqagacha kutamiz
+        waited = 0.0
+        while job.expect_parts and len(job.voice_parts) < job.expect_parts and waited < PART_WAIT:
+            await asyncio.sleep(3)
+            waited += 3
     except asyncio.CancelledError:
         return
     async with job.lock:
@@ -769,11 +822,13 @@ async def decide_voice(job, wait=4.0):
             return
         total = sum(d for _, d in job.voice_parts)
         need = expected_voice_sec(job)
-        if total < 0.6 * need:
+        missing = job.expect_parts and len(job.voice_parts) < job.expect_parts
+        if total < 0.6 * need or missing:
             n = len(job.voice_parts)
+            extra = f" {job.expect_parts} ta qismdan {n} tasi keldi." if missing else ""
             await bot.send_message(
                 job.chat_id,
-                f"🎙 Ovoz qabul qilindi{f' ({n} ta qism)' if n > 1 else ''}: jami <b>{fmt_sec(total)}</b>. "
+                f"🎙 Ovoz qabul qilindi{f' ({n} ta qism)' if n > 1 else ''}: jami <b>{fmt_sec(total)}</b>.{extra} "
                 f"Matnni o‘qish esa taxminan <b>{fmt_sec(need)}</b> oladi.\n\n"
                 "Davomini yuboring (bir nechta ovozli xabarga bo‘lib yuborsangiz ham bo‘ladi) "
                 "yoki shu ovoz bilan yig‘ishni tanlang.",
@@ -785,7 +840,8 @@ async def decide_voice(job, wait=4.0):
 async def start_render(job):
     """Qismlarni birlashtirib, videoni yig'ishni boshlaydi (job.lock ichida chaqiriladi)."""
     parts = [p for p, _ in job.voice_parts]
-    job.voice_parts = []
+    job.render_parts, job.render_started = list(job.voice_parts), time.time()
+    job.voice_parts, job.expect_parts = [], 0
     if len(parts) == 1:
         job.voice = parts[0]
     else:
@@ -814,6 +870,7 @@ async def tts_job(job):
                      + (f". ElevenLabs krediti qoldi: {left:,}".replace(",", " ") if left is not None else ""), force=True)
         async with job.lock:
             job.voice, job.voice_parts, job.voice_anchors = path, [], anchors or None
+            job.render_parts, job.expect_parts = None, 0
             job.square = None
             job.busy = "render"
             job.task = asyncio.create_task(render(job))
@@ -930,11 +987,9 @@ async def on_voice(m: Message):
         return await m.answer("Avval kinoni yuboring 🎬")
     if not job.script:
         return await m.answer("⏳ Matn hali tayyor emas. Tayyor bo‘lgach, o‘shani o‘qib yuborasiz.")
-    if job.busy:
-        return await m.answer("⏳ Video yig‘ilyapti. Tugagach, yangi ovozni yuborishingiz mumkin.")
     a = {"file_id": m.voice.file_id, "size": m.voice.file_size or 0, "msg_id": m.message_id, "ext": ".ogg"}
     try:
-        await take_voice(job, a)
+        await take_voice(job, a, m.caption or "")
     except Exception as e:
         await m.answer(f"❌ Ovozni yuklab bo‘lmadi: {short_err(e)}")
 
@@ -945,11 +1000,24 @@ async def on_audio(m: Message):
     if not allowed(m.from_user.id):
         return
     a = audio_info(m)
+    media = m.audio or m.document
+    a["caption"] = " ".join(x for x in (m.caption, getattr(media, "title", None), getattr(media, "file_name", None)) if x)
     job = JOBS.get(m.from_user.id)
-    if job and job.script and job.movie and not job.busy:
-        PENDING_AUDIO[m.from_user.id] = a
+    if job and job.script and job.movie and (not job.busy or can_restart(job)):
+        if part_of(a["caption"]):
+            # «1/2» kabi belgisi bor — bu diktor ovozining bir qismi, so'ramasdan olamiz
+            try:
+                await take_voice(job, a, a["caption"])
+            except Exception as e:
+                await m.answer(f"❌ Ovozni yuklab bo‘lmadi: {short_err(e)}")
+            return
+        pend = PENDING_AUDIO.setdefault(m.from_user.id, {})
+        pend[m.message_id] = a
+        while len(pend) > 10:
+            pend.pop(next(iter(pend)))
         return await m.answer(f"«{esc(a['name'])}» — bu nima?",
-                              reply_markup=kb([("🎙 Diktor ovozi", "as_voice"), ("🎵 Musiqa (saqlash)", "as_music")]))
+                              reply_markup=kb([("🎙 Diktor ovozi", f"as_voice:{m.message_id}"),
+                                               ("🎵 Musiqa (saqlash)", f"as_music:{m.message_id}")]))
     asyncio.create_task(add_song(m.chat.id, a))
 
 
@@ -1040,24 +1108,30 @@ async def on_text(m: Message):
     await m.answer("⏳ Ishlayapman, biroz kuting…")
 
 
-@dp.callback_query(F.data.startswith("mdel:") | F.data.in_({"mtoggle", "as_music", "as_voice"}))
+@dp.callback_query(F.data.startswith("mdel:") | F.data.startswith("as_music") | F.data.startswith("as_voice")
+                   | (F.data == "mtoggle"))
 async def on_music_button(c: CallbackQuery):
     await c.answer()
     uid, chat_id = c.from_user.id, c.message.chat.id if c.message else c.from_user.id
     if not allowed(uid):
         return
-    if c.data in ("as_music", "as_voice"):
-        a = PENDING_AUDIO.pop(uid, None)
+    if c.data.startswith(("as_music", "as_voice")):
+        kind, _, mid = c.data.partition(":")
+        pend = PENDING_AUDIO.get(uid) or {}
+        if mid.isdigit():
+            a = pend.pop(int(mid), None)
+        else:  # eski tugma
+            a = pend.pop(next(reversed(pend)), None) if pend else None
         if not a:
             return await bot.send_message(chat_id, "Faylni qaytadan yuboring.")
-        if c.data == "as_music":
+        if kind == "as_music":
             asyncio.create_task(add_song(chat_id, a))
             return
         job = JOBS.get(uid)
-        if not job or not job.script or job.busy:
+        if not job or not job.script:
             return await bot.send_message(chat_id, "⏳ Hozir ovoz qabul qila olmayman, biroz kuting.")
         try:
-            await take_voice(job, a)
+            await take_voice(job, a, a.get("caption", ""))
         except Exception as e:
             await bot.send_message(chat_id, f"❌ Ovozni yuklab bo‘lmadi: {short_err(e)}")
         return
@@ -1142,7 +1216,9 @@ async def on_voice_choice(c: CallbackQuery):
                     os.remove(p)
                 except OSError:
                     pass
-            job.voice_parts = []
+            job.voice_parts, job.expect_parts = [], 0
+            if job.voice_timer and not job.voice_timer.done():
+                job.voice_timer.cancel()
             return await bot.send_message(job.chat_id, "🗑 Mayli, ovoz o‘chirildi. Matnni qaytadan o‘qib yuboring 🎙")
         if not job.voice_parts:
             return await bot.send_message(job.chat_id, "Avval ovozli xabar yuboring 🎙")
@@ -1277,7 +1353,7 @@ async def on_shutdown():
     """Server to'xtatilayotganda (yangilanish yoki qayta ishga tushish) ishi bor foydalanuvchilarni ogohlantiradi."""
     now = time.time()
     for job in list(JOBS.values()):
-        working = job.busy or (job.task and not job.task.done())
+        working = job.busy or (job.task and not job.task.done()) or job.script
         if working and now - job.last < 3 * 3600:
             try:
                 await bot.send_message(job.chat_id, "⚠️ Server qayta ishga tushyapti, kino bilan ish to‘xtab qoldi. "
