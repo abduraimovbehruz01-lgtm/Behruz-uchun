@@ -20,6 +20,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 Image.MAX_IMAGE_PIXELS = 150_000_000  # uzun webtoon rasmlari uchun
+_RS = getattr(Image, "Resampling", Image)  # Pillow'ning yangi va eski versiyalari uchun
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLATE = os.environ.get("PLATE", "1") != "0"  # rastr ustidagi matnga oq plashka
@@ -118,7 +119,7 @@ def api_image(img: Image.Image, max_side: int = 2048) -> bytes:
     w, h = img.size
     k = min(1.0, max_side / max(w, h))
     if k < 1.0:
-        img = img.resize((max(1, round(w * k)), max(1, round(h * k))), Image.LANCZOS)
+        img = img.resize((max(1, round(w * k)), max(1, round(h * k))), _RS.LANCZOS)
     return to_jpeg(img, 88)
 
 
@@ -130,7 +131,7 @@ def split_points(img: Image.Image, ratio: float = 2.3, target: float = 1.5) -> l
         return [(0, h)]
     small_w = min(w, 400)
     k = small_w / w
-    g = np.asarray(img.convert("L").resize((small_w, max(1, round(h * k))), Image.BILINEAR), dtype=np.float32)
+    g = np.asarray(img.convert("L").resize((small_w, max(1, round(h * k))), _RS.BILINEAR), dtype=np.float32)
     row_std = g.std(axis=1)
     edge = np.abs(np.diff(g, axis=0)).mean(axis=1)
     edge = np.concatenate([edge, edge[-1:]])

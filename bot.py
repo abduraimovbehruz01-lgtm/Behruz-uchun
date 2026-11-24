@@ -271,6 +271,9 @@ async def gate(msg: Message) -> bool:
 async def translate_image(img, uid: int, notify=None):
     """Sahifani (kerak bo'lsa bo'laklab) Gemini'ga yuboradi va tarjimani rasmga yozadi.
     Qaytaradi: (yangi rasm, bloklar, asl til)."""
+    global HTTP
+    if HTTP is None:
+        HTTP = aiohttp.ClientSession()
     segs = await asyncio.to_thread(typeset.split_points, img)
     w = img.width
     out = img if len(segs) == 1 else img.copy()
