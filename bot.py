@@ -23,6 +23,7 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 
 import eleven
 import gemini
+import mangabot
 import music
 import video
 
@@ -1175,6 +1176,10 @@ async def tts_job(job):
 
 # ---------------- Xabarlar ----------------
 
+# Manga-video (/manga): handlerlari kino oqimidan OLDIN ro'yxatdan o'tadi, lekin faqat /manga seansi ochiq bo'lsagina ishlaydi
+mangabot.setup(bot=bot, dp=dp, allowed=allowed, short_err=short_err, work_dir=WORK_DIR, music_dir=MUSIC_DIR,
+               music=music, gem=gem, http=lambda: HTTP, heavy=HEAVY, big=BIG)
+
 WELCOME = (
     "Salom! 🎬 Men kinodan 1 daqiqalik qisqa hikoya-video yasayman.\n\n"
     "1) Kinoni shu yerga <b>fayl qilib</b> yuboring yoki kanalingizdan forward qiling (2 GB gacha).\n"
@@ -1184,9 +1189,11 @@ WELCOME = (
     "🎞 Ovozsiz video kerak bo‘lsa — matn tagidagi «Oddiy video» tugmasi: kinoning eng qiziq sahnasini "
     "(45–120 soniya) effektsiz kesib, mos qo‘shiq bilan yasayman.\n"
     "🎵 Qo‘shiq (mp3) yuborsangiz, saqlab qo‘yaman va har videoga mosini o‘zim tanlayman.\n"
-    "🤖 Ovozni o‘zingiz yozmasangiz, matn tagidagi «ElevenLabs ovozida o‘qit» tugmasini bosing (/ovoz — diktor).\n\n"
-    "Buyruqlar: /uzunlik — video uzunligi, /musiqa — qo‘shiqlar ro‘yxati, /kod 125 — kodni o‘zgartirish, "
-    "/bekor — joriy ishni to‘xtatish."
+    "🤖 Ovozni o‘zingiz yozmasangiz, matn tagidagi «ElevenLabs ovozida o‘qit» tugmasini bosing (/ovoz — diktor).\n"
+    "📖 Manga-video: /manga — manga sahifalarini yuborasiz, matnni o‘zingiz yozasiz, men panellarni qirqib, "
+    "subtitrli vertikal video yasayman.\n\n"
+    "Buyruqlar: /manga — manga-video, /uzunlik — video uzunligi, /musiqa — qo‘shiqlar ro‘yxati, /kod 125 — kodni "
+    "o‘zgartirish, /bekor — joriy ishni to‘xtatish."
 )
 
 
@@ -1661,6 +1668,7 @@ async def on_startup():
     try:
         await bot.set_my_commands([
             BotCommand(command="start", description="Yo‘riqnoma"),
+            BotCommand(command="manga", description="Manga sahifalaridan video yasash"),
             BotCommand(command="bekor", description="Joriy ishni to‘xtatish"),
             BotCommand(command="kod", description="Kino kodini o‘zgartirish"),
             BotCommand(command="musiqa", description="Qo‘shiqlar ro‘yxati"),

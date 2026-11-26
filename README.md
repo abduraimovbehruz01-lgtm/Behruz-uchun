@@ -30,6 +30,19 @@ Matn tagidagi yoki tayyor video tagidagi «🎵 Oddiy video» tugmasi:
 
 Tugmalar: «🎞 Boshqa sahna», «🎵 Boshqa qo‘shiq», «🔇 Qo‘shiqsiz», «📐 9:16» (oddiy videoda tepasi va pasti qora, xiralashtirilgan fon yo‘q).
 
+## Manga-video (`/manga`)
+
+Manga yoki webtoon sahifalaridan, o‘zingiz yozgan o‘zbekcha matn bilan vertikal (9:16, 720×1280) video:
+
+1. `/manga` deb yozing, so‘ng sahifalarni yuboring: rasm (yaxshisi «fayl» qilib) yoki ZIP / CBZ. Webtoon bo‘laklari ketma-ket yuboriladi, bot ularni o‘zi ulaydi.
+2. «✅ Tugadi» ni bosing. Bot panellarni oq/qora oraliqlar bo‘yicha qirqib, raqamlangan rasm yuboradi.
+3. Matnni yuboring: **har panel uchun bitta qator** (1-qator → 1-panel). Matn kerak bo‘lmasa qatorga `-` yozing. Qatorlarni raqam bilan ham yozsa bo‘ladi (`3. matn`), shunda faqat shu panellarga qo‘yiladi. Qator kam bo‘lsa, qolgan panellar matnsiz chiqadi (bot so‘raydi).
+4. Bot videoni yasaydi: panel sekin yaqinlashadi, uzun panel yuqoridan pastga suriladi, eni kichik panelning orqasida xira fon bo‘ladi. Yuqori chapda Telegram belgisi va **MANHORA** yozuvi, pastda qalin oq subtitr. Qo‘shiq kutubxonadan olinadi (kino ovozi yo‘q).
+5. Tugmalar: «🎵 Boshqa qo‘shiq», «🔇 Qo‘shiqsiz», «🔄 Matnni o‘zgartirish». Panellar teskari tartibda chiqsa (yapon manga), tugma bilan o‘qish yo‘nalishini almashtiring.
+
+Sozlamalar (ixtiyoriy): `MANGA_BADGE` (yuqoridagi yozuv, standart `MANHORA`), `MANGA_FPS` (24), `MANGA_W` (720), `MANGA_MIN_SEC` (2.2), `MANGA_SEC_PER_CHAR` (0.075), `MANGA_MAX_PANELS` (200).
+Hozircha PDF qabul qilinmaydi. Seans xotirada turadi: server qayta ishga tushsa, `/manga` dan boshlanadi.
+
 ## Sozlamalar (Render → Environment)
 
 | Nomi | Nima | Majburiy |
