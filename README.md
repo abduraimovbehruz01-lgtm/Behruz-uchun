@@ -58,8 +58,10 @@ boblarni yuklaydi (kerak bo‘lsa bot ularni o‘zi tarjima qiladi).
 - Telegram botlarga 20 MB dan katta faylni yuklab olishga ruxsat bermaydi — katta faylni havola qilib yuboring.
 - Gemini bepul limiti kunlik; har sahifa = 1 so‘rov (uzun webtoon — bir nechta). Limit kalitga emas, Google loyihasiga bog‘langan.
 - Render bepul tarifida server 15 daqiqa ishlatilmasa uxlaydi — birinchi javob ~1 daqiqa kechikadi.
-  Rejadagi boblar uchun GitHub Actions (`.github/workflows/manhora-uygotish.yml`, asosiy branchda) har kuni
-  belgilangan soatlardan 10 daqiqa oldin serverni uyg‘otadi.
+  Rejadagi bob: server uyg‘oq bo‘lsa — aniq vaqtida chiqadi (yaqin 20 daqiqada bob bo‘lsa, bot o‘zini uyg‘oq tutadi);
+  uxlab yotgan bo‘lsa — keyingi uyg‘onganda. Aniq vaqtda chiqishi uchun tashqi «uyg‘otuvchi» kerak: har kuni
+  03:50, 06:50, 09:50, 12:50, 15:50 (UTC) da `https://manga-tarjima.onrender.com/health` ga murojaat
+  (masalan, GitHub Actions yoki cron-job.org).
 
 ## Kompyuterda sinash
 ```
