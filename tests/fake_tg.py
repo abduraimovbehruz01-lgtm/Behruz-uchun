@@ -58,6 +58,8 @@ class Sent:
     async def edit_text(self, text, reply_markup=None): self.text = text; LOG.append(("edit", self.chat_id, text, reply_markup))
     async def edit_caption(self, caption=None, reply_markup=None): LOG.append(("edit", self.chat_id, caption, reply_markup))
     async def edit_reply_markup(self, reply_markup=None): LOG.append(("markup", self.chat_id, reply_markup))
+    async def edit_media(self, media, reply_markup=None, **k):
+        LOG.append(("media", self.chat_id, media.k.get("caption"), reply_markup, media.k.get("media")))
     async def delete(self): LOG.append(("del", self.chat_id, self.text))
 
 def _data(f):
@@ -65,11 +67,23 @@ def _data(f):
     if isinstance(f, Rec) and f.a: return open(f.a[0], "rb").read()
     return FILES.get(f, b"")
 
+CHATS = {}          # chat_id yoki "@username" → Rec(id, type, title, username, first_name)
+MEMBERS = {}        # (chat_id, user_id) → status
+
 class FakeBot:
-    async def download(self, file_id, timeout=30): return io.BytesIO(FILES[file_id])
+    id = 999
+    async def download(self, file_id, timeout=30, destination=None):
+        if destination is not None:
+            with open(destination, "wb") as f: f.write(FILES[file_id])
+            return None
+        return io.BytesIO(FILES[file_id])
     async def send_chat_action(self, **k): pass
     async def get_me(self): return Rec(username="ManhoraBot")
-    async def get_chat_member(self, chat_id, user_id): return Rec(status="member")
+    async def get_chat(self, chat_id):
+        if chat_id not in CHATS: raise TelegramBadRequest("chat not found")
+        return CHATS[chat_id]
+    async def get_chat_member(self, chat_id, user_id): return Rec(status=MEMBERS.get((chat_id, user_id), "member"))
+    async def create_chat_invite_link(self, chat_id, name=None, **k): return Rec(invite_link=f"https://t.me/+inv{abs(chat_id)}")
     async def send_message(self, chat_id, text, reply_markup=None, **k):
         LOG.append(("msg", chat_id, text, reply_markup)); return Sent(chat_id, text)
     async def send_photo(self, chat_id, photo, caption=None, reply_markup=None, **k):
@@ -100,7 +114,8 @@ def install():
     mod("aiogram.fsm"); mod("aiogram.fsm.context", FSMContext=FSM); mod("aiogram.fsm.state", State=State, StatesGroup=StatesGroup)
     mod("aiogram.types", BotCommand=Rec, BufferedInputFile=Rec, CallbackQuery=CallbackQuery, FSInputFile=Rec,
         InlineKeyboardButton=Rec, InlineKeyboardMarkup=Rec, Message=object, ReplyParameters=Rec, InputMediaPhoto=Rec,
-        KeyboardButton=Rec, ReplyKeyboardMarkup=Rec, ChatMemberUpdated=object)
+        KeyboardButton=Rec, ReplyKeyboardMarkup=Rec, ChatMemberUpdated=object, ReplyKeyboardRemove=Rec,
+        KeyboardButtonRequestUsers=Rec, KeyboardButtonRequestChat=Rec, ChatAdministratorRights=Rec)
     mod("aiogram.webhook"); mod("aiogram.webhook.aiohttp_server", SimpleRequestHandler=Rec, setup_application=lambda *a, **k: None)
 
 class User:
@@ -109,9 +124,10 @@ class Chat:
     def __init__(self, cid, type="private", title=""): self.id, self.type, self.title = cid, type, title
 
 class Msg:
-    def __init__(self, uid, text=None, photo=None, document=None):
+    def __init__(self, uid, text=None, photo=None, document=None, users_shared=None, chat_shared=None, forward_origin=None):
         self.message_id = next(_ids); self.from_user = User(uid); self.chat = Chat(uid)
         self.text, self.photo, self.document = text, photo, document
+        self.users_shared, self.chat_shared, self.forward_origin = users_shared, chat_shared, forward_origin
     async def answer(self, text, reply_markup=None, **k): LOG.append(("msg", self.chat.id, text, reply_markup)); return Sent(self.chat.id, text)
     async def answer_photo(self, f, caption=None, **k): LOG.append(("photo", self.chat.id, caption, k.get("reply_markup"), f)); return Sent(self.chat.id)
     async def answer_document(self, f, caption=None, **k): LOG.append(("doc", self.chat.id, f.k.get("filename") or (f.a[1] if len(f.a) > 1 else ""), caption)); return Sent(self.chat.id)

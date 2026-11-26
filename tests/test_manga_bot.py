@@ -7,7 +7,7 @@ T.install()
 os.environ.update(BOT_TOKEN="1:x", GEMINI_API_KEY="k", OWNER_IDS="1")
 os.environ.pop("FIREBASE_SERVICE_ACCOUNT", None)
 from PIL import Image
-import core, reader, admin, tools, samples, translator
+import core, reader, admin, staff, tools, samples, translator
 import bot as B   # routerlar ulanadi
 
 PAGE, ITEMS = samples.page_jp(jitter=0.03)
@@ -15,6 +15,7 @@ def jpg(img): b = io.BytesIO(); img.save(b, "JPEG", quality=85); return b.getval
 async def fake_read(session, jpeg, **k): return {"blocks": ITEMS, "source_language": "yaponcha", "model": "fake"}
 core.GEM.read_page = fake_read
 CAT = core.CAT
+admin.SETTLE_DELAY = 0.01
 def last(kind=None, chat=None):
     for e in reversed(T.LOG):
         if (kind is None or e[0] == kind) and (chat is None or e[1] == chat): return e
@@ -29,7 +30,7 @@ async def main():
     assert "ulanmagan" in last("msg", OWN)[2]
     # 2) bot kanalga admin qilindi → ombor
     ev = T.Rec(chat=T.Chat(-100500, "channel", "Ombor"), new_chat_member=T.Rec(status="administrator"), from_user=T.User(OWN))
-    await admin.on_member(ev)
+    await staff.on_member(ev)
     assert core.storage_chat() == -100500 and "ombori" in last("msg", OWN)[2]
     print("ok: ombor kanali avtomatik aniqlandi")
     # 3) manga qo'shish
@@ -56,7 +57,8 @@ async def main():
     T.FILES["ZIP1"] = buf.getvalue()
     await admin.cb_ach(cb(OWN, "ach:101"), st)
     await admin.ac_doc(T.Msg(OWN, document=T.Rec(file_id="ZIP1", file_name="bob1.zip", mime_type="application/zip", file_size=1000)), st)
-    assert st.state == "AddChap:num"
+    await admin.SETTLE[OWN]
+    assert st.state == "AddChap:num", st.state
     await admin.cb_num(cb(OWN, "adm:num:1"), st)
     await admin.cb_tr(cb(OWN, "adm:tr:1"), st)
     await admin.JOBS[OWN]["task"]

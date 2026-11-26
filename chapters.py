@@ -10,8 +10,9 @@ import zipfile
 
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff")
 ARCHIVE_EXT = (".zip", ".cbz")
-MAX_UNPACKED = 400 * 1024 * 1024   # «zip-bomba»dan himoya
+MAX_UNPACKED = 400 * 1024 * 1024   # «zip-bomba»dan himoya (bitta bob uchun)
 MAX_ONE = 60 * 1024 * 1024
+MAX_NESTED = 150 * 1024 * 1024     # katta ZIP ichidagi bitta bob arxivi/PDF
 
 
 class ChapterError(Exception):
@@ -38,21 +39,49 @@ def kind_of(name: str, mime: str = "") -> str:
     return ""
 
 
-def zip_pages(data: bytes, limit: int):
-    """Arxivdagi rasmlar (nomi bo'yicha tabiiy tartibda). Qaytaradi: ([(nom, bayt), ...], jami_rasmlar_soni)."""
+def sniff(src) -> str:
+    """Fayl turini ichidagi baytlardan aniqlaydi: 'archive' | 'pdf' | ''. src — yo'l yoki baytlar."""
     try:
-        zf = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile:
+        if isinstance(src, (bytes, bytearray)):
+            head = bytes(src[:8])
+        else:
+            with open(src, "rb") as f:
+                head = f.read(8)
+    except OSError:
+        return ""
+    if head.startswith(b"PK\x03\x04") or head.startswith(b"PK\x05\x06"):
+        return "archive"
+    if head.startswith(b"%PDF"):
+        return "pdf"
+    return ""
+
+
+def _open_zip(src):
+    try:
+        return zipfile.ZipFile(io.BytesIO(src) if isinstance(src, (bytes, bytearray)) else src)
+    except (zipfile.BadZipFile, OSError):
         raise ChapterError("ZIP fayl ochilmadi (buzilgan yoki boshqa format).")
+
+
+def _junk(name: str) -> bool:
+    base = name.rsplit("/", 1)[-1]
+    return name.startswith("__MACOSX/") or "/__MACOSX/" in name or base.startswith(".") or \
+        base.lower() in ("thumbs.db", "desktop.ini")
+
+
+def _parent(name: str) -> str:
+    return name.rsplit("/", 1)[0] if "/" in name else ""
+
+
+def _zip_images(zf, limit, folder=None):
     infos = []
     for info in zf.infolist():
         if info.is_dir():
             continue
         name = info.filename.replace("\\", "/")
-        base = name.rsplit("/", 1)[-1]
-        if name.startswith("__MACOSX/") or base.startswith(".") or base.lower() == "thumbs.db":
+        if _junk(name) or not name.lower().endswith(IMG_EXT) or info.file_size > MAX_ONE:
             continue
-        if not base.lower().endswith(IMG_EXT) or info.file_size > MAX_ONE:
+        if folder is not None and _parent(name) != folder:
             continue
         infos.append(info)
     infos.sort(key=lambda i: natural_key(i.filename))
@@ -68,8 +97,141 @@ def zip_pages(data: bytes, limit: int):
     return out, len(infos)
 
 
-def pdf_pages(data: bytes, limit: int, width: int = 1600):
-    """PDF sahifalarini rasmga aylantiradi (eni ~width piksel)."""
+def zip_pages(src, limit: int):
+    """Arxivdagi rasmlar (nomi bo'yicha tabiiy tartibda). src — baytlar yoki fayl yo'li.
+    Qaytaradi: ([(nom, bayt), ...], jami_rasmlar_soni)."""
+    with _open_zip(src) as zf:
+        return _zip_images(zf, limit)
+
+
+def zip_groups(src):
+    """Katta ZIP ichidagi boblarni topadi: rasmli papkalar, ichki ZIP/CBZ va PDF fayllar.
+    Qaytaradi: [{"label", "kind": "dir"|"zip"|"pdf", "key", "count"}] (tabiiy tartibda).
+    Bitta element bo'lsa — bu oddiy bitta bob."""
+    with _open_zip(src) as zf:
+        dirs, nested = {}, []
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            name = info.filename.replace("\\", "/")
+            if _junk(name):
+                continue
+            low = name.lower()
+            if low.endswith(IMG_EXT):
+                d = _parent(name)
+                dirs[d] = dirs.get(d, 0) + 1
+            elif low.endswith(ARCHIVE_EXT + (".pdf",)):
+                nested.append({"label": name.rsplit("/", 1)[-1], "kind": "pdf" if low.endswith(".pdf") else "zip",
+                               "key": info.filename, "count": 0})
+    groups = [{"label": (d.rsplit("/", 1)[-1] or "bob"), "kind": "dir", "key": d, "count": c} for d, c in dirs.items()]
+    if sum(1 for g in groups if g["count"] >= 2) + len(nested) >= 2:
+        groups = [g for g in groups if g["count"] >= 2]   # muqova kabi yolg'iz rasmlar bob emas
+    groups += nested
+    groups.sort(key=lambda g: natural_key(g["key"]))
+    return groups
+
+
+def group_pages(src, group: dict, limit: int):
+    """zip_groups() topgan bitta bobning sahifalari."""
+    with _open_zip(src) as zf:
+        if group["kind"] == "dir":
+            return _zip_images(zf, limit, folder=group["key"])
+        try:
+            info = zf.getinfo(group["key"])
+        except KeyError:
+            raise ChapterError("Arxiv ichida fayl topilmadi.")
+        if info.file_size > MAX_NESTED:
+            raise ChapterError(f"«{group['label']}» juda katta.")
+        data = zf.read(info)
+    return zip_pages(data, limit) if group["kind"] == "zip" else pdf_pages(data, limit)
+
+
+def _strip_ext(name: str) -> str:
+    low = name.lower()
+    for e in ARCHIVE_EXT + (".pdf", ".rar", ".cbr", ".7z"):
+        if low.endswith(e):
+            return name[:-len(e)]
+    return name
+
+
+_NUM = r"(\d{1,5}(?:[.,]\d{1,2})?)"
+
+
+def guess_num(label: str):
+    """Papka yoki fayl nomidan bob raqamini topadi: 'Chapter 12', 'Ch.012', '12-bob', '第12話', '012 - Nomi'."""
+    s = _strip_ext((label or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1])
+    s = re.sub(r"[\[\(\{][^\]\)\}]*[\]\)\}]", " ", s)                       # [Guruh], (2023), {1080p}
+    s = re.sub(r"(?i)(?<![a-z])(?:vol(?:ume)?|v|tom|том|season|s)[\s._-]*\d+", " ", s)
+    for p in (r"(?i)(?:chapter|chap|ch|bob|qism|глава|гл|episode|ep|эпизод|часть|#)[\s._:#-]*" + _NUM,
+              _NUM + r"\s*[-_ ]?\s*(?:bob|qism|화|話|话|回|chi\b)",
+              r"第\s*" + _NUM):
+        m = re.search(p, s)
+        if m:
+            return _to_num(m.group(1))
+    nums = re.findall(r"(?<![\d.,])" + _NUM + r"(?![\d])", s)
+    if not nums:
+        return None
+    first = re.match(r"\s*" + _NUM, s)
+    return _to_num(first.group(1) if first else nums[-1])
+
+
+def _to_num(t):
+    try:
+        v = float(t.replace(",", "."))
+    except ValueError:
+        return None
+    return v if 0 <= v < 100000 else None
+
+
+def assign_numbers(labels, start: float):
+    """Har bir nomga bob raqami. Hammasi topilsa va takrorlanmasa — nomidagi raqamlar,
+    aks holda tartib bo'yicha start, start+1, ... Qaytaradi: (raqamlar, taxminiy_mi)."""
+    nums = [guess_num(x) for x in labels]
+    if nums and all(n is not None for n in nums) and len(set(nums)) == len(nums):
+        return nums, False
+    return [float(start) + i for i in range(len(labels))], True
+
+
+def dhash(raw: bytes, size: int = 16) -> str:
+    """Rasmning 256 bitli «farq xeshi» — bir xil rasmni qayta siqilgan bo'lsa ham taniydi.
+    Uzun webtoon bo'lagida faqat yuqori qismi (eni × 2·eni) olinadi."""
+    from PIL import Image
+    rs = getattr(Image, "Resampling", Image)
+    with Image.open(io.BytesIO(raw)) as im:
+        try:
+            im.draft("L", (256, 256))   # JPEG'ni kichraytirib ochish — ancha tez
+        except Exception:
+            pass
+        g = im.convert("L")
+        w, h = g.size
+        if h > 2 * w:
+            g = g.crop((0, 0, w, 2 * w))
+        g = g.resize((size + 1, size), rs.BILINEAR)
+    px = g.tobytes()
+    bits = 0
+    for y in range(size):
+        for x in range(size):
+            bits = (bits << 1) | (1 if px[y * (size + 1) + x] > px[y * (size + 1) + x + 1] else 0)
+    return f"{bits:0{size * size // 4}x}"
+
+
+def fingerprint(pages, k: int = 6):
+    """Bobning barmoq izi: sahifalar soni va teng oraliqdagi k ta sahifaning dHash'i."""
+    n = len(pages)
+    if not n:
+        return None
+    idx = range(n) if n <= k else sorted({round(i * (n - 1) / (k - 1)) for i in range(k)})
+    hs = []
+    for i in idx:
+        try:
+            hs.append(dhash(pages[i][1]))
+        except Exception:
+            hs.append("")
+    return {"n": n, "h": hs}
+
+
+def pdf_pages(data, limit: int, width: int = 1600):
+    """PDF sahifalarini rasmga aylantiradi (eni ~width piksel). data — baytlar yoki fayl yo'li."""
     try:
         import pypdfium2 as pdfium
     except ImportError:
@@ -99,8 +261,11 @@ def pdf_pages(data: bytes, limit: int, width: int = 1600):
         pdf.close()
 
 
-def extract(data: bytes, name: str, mime: str, limit: int):
+def extract(data, name: str, mime: str, limit: int):
+    """Bitta bob faylidan sahifalar. data — baytlar yoki diskdagi fayl yo'li."""
     k = kind_of(name, mime)
+    if k not in ("archive", "pdf"):
+        k = sniff(data) or k
     if k == "archive":
         return zip_pages(data, limit)
     if k == "pdf":

@@ -3,11 +3,14 @@
 Bazadagi tuzilma (Firestore kolleksiyalari):
   manga/{kod}      — nomi, tavsifi, janrlari, muqovasi, kuzatuvchilar, boblar ro'yxati (sahifalarsiz)
   chapters/{id}    — bob sahifalari (Telegram file_id lari) va tayyor PDF
+  fps/{kod}        — boblarning «barmoq izlari» (takroriy bobni aniqlash uchun; faqat yuklashda o'qiladi)
   users/{uid}      — jeton, VIP muddati, sotib olingan boblar, sevimlilar, qayerda to'xtagani
   admins/{uid}     — admin huquqlari
-  settings/main    — sozlamalar (ombor kanali, keyingi kod, narxlar ...)
+  settings/main    — sozlamalar (ombor kanali, keyingi kod, majburiy kanallar, narxlar ...)
+  settings/journal — adminlar harakatlari jurnali (oxirgi yozuvlar)
   stats/{sana}     — kunlik hisoblagichlar
 Server uyg'onganda faqat manga hujjatlari o'qiladi; sahifalar kerak bo'lganda yuklanadi (bepul limitni tejash uchun).
+Eslatma: Firestore ichma-ich ro'yxatlarni (ro'yxat ichida ro'yxat) saqlamaydi — shuning uchun juftliklar lug'at qilib yoziladi.
 """
 import asyncio
 import re
@@ -15,6 +18,14 @@ import time
 from datetime import datetime, timedelta, timezone
 
 TZ = timezone(timedelta(hours=5))
+JOURNAL_MAX = 300
+GLOSSARY_MAX = 300
+SLOTS = (9, 12, 15, 18, 21)          # rejalashtirilgan boblar chiqadigan soatlar (Toshkent vaqti)
+STATUS = {"ongoing": "🟢 Davom etmoqda", "completed": "✅ Tugagan", "hiatus": "⏸ To‘xtatilgan", "soon": "🔜 Tez orada"}
+_LEGACY_STATUS = {"davom etmoqda": "ongoing", "tugagan": "completed", "to‘xtatilgan": "hiatus",
+                  "toxtatilgan": "hiatus", "to'xtatilgan": "hiatus", "tez orada": "soon"}
+DAYS = ("dushanba", "seshanba", "chorshanba", "payshanba", "juma", "shanba", "yakshanba")
+DAYS_SHORT = ("Du", "Se", "Ch", "Pa", "Ju", "Sh", "Ya")
 
 RIGHTS = {
     "manga": "📚 Manga qo‘shish va tahrirlash",
@@ -63,6 +74,68 @@ def norm(s: str) -> str:
     return re.sub(r"[^\w]+", " ", s, flags=re.UNICODE).strip()
 
 
+def ranges(nums) -> str:
+    """[12, 13, 14, 16, 17.5] → '12–14, 16, 17.5'"""
+    vals = sorted({float(n) for n in nums})
+    out, i = [], 0
+    while i < len(vals):
+        j = i
+        while j + 1 < len(vals) and vals[j].is_integer() and vals[j + 1] == vals[j] + 1:
+            j += 1
+        out.append(fmt_num(vals[i]) if j == i else (f"{fmt_num(vals[i])}, {fmt_num(vals[j])}" if j == i + 1
+                                                     else f"{fmt_num(vals[i])}–{fmt_num(vals[j])}"))
+        i = j + 1
+    return ", ".join(out)
+
+
+def status_key(m) -> str:
+    s = (m.get("status") or "").strip()
+    return s if s in STATUS else _LEGACY_STATUS.get(s.lower(), "")
+
+
+def status_text(m) -> str:
+    return STATUS.get(status_key(m)) or (m.get("status") or "")
+
+
+def days_text(days) -> str:
+    ds = sorted({int(d) for d in (days or []) if str(d).lstrip("-").isdigit() and 0 <= int(d) <= 6})
+    if not ds:
+        return ""
+    if len(ds) == 7:
+        return "har kuni"
+    names = [DAYS[d] for d in ds]
+    return "har " + (names[0] if len(names) == 1 else ", ".join(names[:-1]) + " va " + names[-1])
+
+
+def when_text(ts) -> str:
+    d = datetime.fromtimestamp(float(ts), TZ)
+    return f"{d:%d.%m} ({DAYS_SHORT[d.weekday()]}) {d:%H:%M}"
+
+
+def slot_ts(day_offset: int, hour: int, now=None) -> float:
+    """Bugundan day_offset kun keyingi kunning soat hour:00 (Toshkent) vaqti."""
+    base = datetime.fromtimestamp(now or time.time(), TZ).date() + timedelta(days=int(day_offset))
+    return datetime(base.year, base.month, base.day, int(hour), 0, tzinfo=TZ).timestamp()
+
+
+def same_fp(a, b) -> bool:
+    """Ikki bobning «barmoq izi» (sahifalar soni + bir nechta sahifaning dHash'i) bir xilmi."""
+    if not a or not b or int(a.get("n") or 0) != int(b.get("n") or 0):
+        return False
+    ha, hb = a.get("h") or [], b.get("h") or []
+
+    def flat(h):  # bir xil rangli (oq/qora) sahifa — solishtirishga yaramaydi
+        bits = len(h) * 4
+        return not bits * 0.05 <= bin(int(h, 16)).count("1") <= bits * 0.95
+
+    pairs = [(x, y) for x, y in zip(ha, hb) if x and y and len(x) == len(y) and not flat(x) and not flat(y)]
+    if not pairs:
+        return False
+    hits = sum(1 for x, y in pairs if bin(int(x, 16) ^ int(y, 16)).count("1") <= len(x) * 4 * 0.05)
+    need = len(pairs) - 2 if len(pairs) >= 6 else len(pairs)
+    return hits >= need
+
+
 class Catalog:
     def __init__(self, store, owners=()):
         self.s = store
@@ -72,6 +145,8 @@ class Catalog:
         self.users: dict[int, dict] = {}
         self.admins: dict[int, dict] = {}
         self.cfg: dict = dict(DEFAULT_CFG)
+        self.journal: list[dict] = []
+        self.fps: dict[str, dict] = {}         # manga kodi → {bob id: barmoq izi} (kesh)
         self._locks: dict[int, asyncio.Lock] = {}
         self.loaded = False
 
@@ -85,11 +160,21 @@ class Catalog:
             self.manga[str(mid)] = d
         self.admins = {int(k): v for k, v in await self.s.all("admins") if str(k).lstrip("-").isdigit()}
         self.cfg = {**DEFAULT_CFG, **(await self.s.get("settings", "main") or {})}
+        self.journal = list((await self.s.get("settings", "journal") or {}).get("items") or [])
         self.loaded = True
 
     async def set_cfg(self, **kw):
         self.cfg.update(kw)
         await self.s.set("settings", "main", kw)
+
+    async def log_action(self, uid, name, text):
+        """Admin harakatini jurnalga yozadi (xato bo'lsa ham asosiy ish to'xtamaydi)."""
+        self.journal.append({"t": time.time(), "u": int(uid or 0), "n": (name or "")[:40], "a": str(text)[:300]})
+        self.journal = self.journal[-JOURNAL_MAX:]
+        try:
+            await self.s.set("settings", "journal", {"items": self.journal}, merge=False)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------ adminlar
     def is_owner(self, uid) -> bool:
@@ -106,12 +191,19 @@ class Catalog:
     def has(self, uid, right) -> bool:
         return right in self.rights(uid)
 
-    async def set_admin(self, uid: int, rights, name="", by=0):
-        rights = [r for r in rights if r in RIGHTS]
-        d = {"rights": rights, "name": name or (self.admins.get(uid) or {}).get("name", ""), "by": by,
-             "added": (self.admins.get(uid) or {}).get("added") or time.time()}
+    async def set_admin(self, uid: int, rights, name="", by=0, username=""):
+        old = self.admins.get(uid) or {}
+        rights = [r for r in RIGHTS if r in set(rights)]
+        d = {"rights": rights, "name": name or old.get("name", ""), "username": username or old.get("username", ""),
+             "by": by or old.get("by", 0), "added": old.get("added") or time.time()}
         self.admins[uid] = d
         await self.s.set("admins", uid, d, merge=False)
+
+    def admin_name(self, uid) -> str:
+        a = self.admins.get(uid) or {}
+        if a.get("name"):
+            return a["name"]
+        return "Bosh admin" if uid in self.owners else str(uid)
 
     async def remove_admin(self, uid: int):
         self.admins.pop(uid, None)
@@ -181,7 +273,7 @@ class Catalog:
             raise ValueError(f"{code} kodi band")
         now = time.time()
         d = {"code": code, "title": title.strip(), "alt": [], "desc": (desc or "").strip(),
-             "genres": [g.strip() for g in (genres or []) if g.strip()], "cover": cover, "status": "davom etmoqda",
+             "genres": [g.strip() for g in (genres or []) if g.strip()], "cover": cover, "status": "ongoing",
              "hidden": False, "created": now, "updated": now, "views": 0, "followers": [], "chapters": {}, "by": by}
         self.manga[code] = d
         await self.s.set("manga", code, {k: v for k, v in d.items() if k != "code"}, merge=False)
@@ -202,6 +294,8 @@ class Catalog:
         for cid in list(m.get("chapters", {})):
             self.pages.pop(cid, None)
             await self.s.delete("chapters", cid)
+        self.fps.pop(code, None)
+        await self.s.delete("fps", code)
         await self.s.delete("manga", code)
 
     # ------------------------------------------------------------ boblar
@@ -234,21 +328,122 @@ class Catalog:
         lst = self.chapter_list(code, unpublished=True)
         return float(int(max(float(c["num"]) for c in lst)) + 1) if lst else 1.0
 
-    async def save_chapter(self, code, num, pages, title="", price=0, published=False) -> dict:
+    async def save_chapter(self, code, num, pages, title="", price=0, published=False, fp=None,
+                           keep=False) -> dict:
+        """Bobni saqlaydi. keep=True va bob avval bo'lsa — narxi, nomi va chop etilganligi o'zgarmaydi
+        (faqat sahifalar yangilanadi)."""
         code = str(code)
         m = self.manga[code]
         cid = chapter_id(code, num)
+        old = m.get("chapters", {}).get(cid) if keep else None
         meta = {"num": float(num), "title": title, "price": int(price), "published": bool(published),
-                "pages": len(pages), "created": time.time()}
+                "pages": len(pages), "created": time.time(), "sched": None}
+        if old:
+            meta.update(title=old.get("title") or title, price=int(old.get("price") or 0),
+                        published=bool(old.get("published")), created=old.get("created") or meta["created"],
+                        sched=old.get("sched"), sched_price=old.get("sched_price"), sched_by=old.get("sched_by"))
+        if fp:
+            await self.chapter_fps(code)
+            self.fps[code][cid] = fp
+            await self.s.set("fps", code, {cid: fp})
         await self.s.set("chapters", cid, {"manga": code, "num": float(num), "pages": list(pages), "pdf": None},
                          merge=False)
         self.pages[cid] = {"pages": list(pages), "pdf": None}
         m.setdefault("chapters", {})[cid] = meta
         upd = {"chapters": {cid: meta}}
-        if published:
+        if published and not old:
             m["updated"] = upd["updated"] = time.time()
         await self.s.set("manga", code, upd)
         return dict(meta, id=cid)
+
+    async def set_pages(self, code, num, pages):
+        """Bob sahifalarini almashtiradi (tahrirlashdan keyin). Saqlangan PDF eskiradi."""
+        cid = chapter_id(code, num)
+        await self.s.set("chapters", cid, {"pages": list(pages), "pdf": None})
+        self.pages[cid] = {"pages": list(pages), "pdf": None}
+        await self.set_chapter(code, num, pages=len(pages))
+
+    def drafts(self, code):
+        return [c for c in self.chapter_list(code, unpublished=True) if not c.get("published")]
+
+    def scheduled(self):
+        """Rejalashtirilgan (hali chop etilmagan) boblar: [(vaqt, kod, raqam, meta)], vaqt bo'yicha."""
+        out = []
+        for code, m in self.manga.items():
+            for cid, c in m.get("chapters", {}).items():
+                if not c.get("published") and c.get("sched"):
+                    out.append((float(c["sched"]), code, float(c["num"]), dict(c, id=cid)))
+        return sorted(out, key=lambda x: (x[0], x[1], x[2]))
+
+    def due(self, now=None):
+        now = time.time() if now is None else now
+        return [x for x in self.scheduled() if x[0] <= now]
+
+    def next_due(self):
+        s = self.scheduled()
+        return s[0][0] if s else None
+
+    async def schedule(self, code, num, ts, price, by=0):
+        await self.set_chapter(code, num, sched=float(ts), sched_price=int(price), sched_by=int(by or 0))
+
+    async def unschedule(self, code, num):
+        await self.set_chapter(code, num, sched=None)
+
+    async def publish(self, code, num, price=None) -> bool:
+        fields = {"published": True, "sched": None}
+        if price is not None:
+            fields["price"] = int(price)
+        return await self.set_chapter(code, num, **fields)
+
+    async def chapter_fps(self, code) -> dict:
+        code = str(code)
+        if code not in self.fps:
+            self.fps[code] = dict(await self.s.get("fps", code) or {})
+        return self.fps[code]
+
+    async def find_duplicate(self, code, fp, exclude=None):
+        """Shu mangada xuddi shunday bob bormi (qayta yuklanganini aniqlash uchun)."""
+        m = self.get(code)
+        if not m or not fp:
+            return None
+        fps = await self.chapter_fps(code)
+        for cid, c in m.get("chapters", {}).items():
+            if exclude is not None and float(c["num"]) == float(exclude):
+                continue
+            if same_fp(fp, fps.get(cid)):
+                return dict(c, id=cid)
+        return None
+
+    # ------------------------------------------------------------ glossariy (ismlar lug'ati)
+    def glossary(self, code) -> list:
+        m = self.get(code) or {}
+        return [g for g in (m.get("glossary") or []) if isinstance(g, dict) and g.get("o") and g.get("t")]
+
+    def glossary_pairs(self, code):
+        return [(g["o"], g["t"]) for g in self.glossary(code)]
+
+    async def set_glossary(self, code, items):
+        seen, out = set(), []
+        for g in items:
+            o, t = str(g.get("o", "")).strip()[:80], str(g.get("t", "")).strip()[:80]
+            k = norm(o) or o
+            if o and t and k not in seen:
+                seen.add(k)
+                out.append({"o": o, "t": t})
+        out = out[:GLOSSARY_MAX]
+        await self.update_manga(code, glossary=out)
+        return out
+
+    async def add_glossary(self, code, pairs):
+        """Yangi juftliklarni qo'shadi; aslida bor so'z bo'lsa — tarjimasi yangilanadi."""
+        cur = {norm(g["o"]) or g["o"]: g for g in self.glossary(code)}
+        order = list(cur)
+        for o, t in pairs:
+            k = norm(o) or o
+            if k not in cur:
+                order.append(k)
+            cur[k] = {"o": o, "t": t}
+        return await self.set_glossary(code, [cur[k] for k in order])
 
     async def set_chapter(self, code, num, **fields):
         code = str(code)
@@ -270,6 +465,9 @@ class Catalog:
         m.get("chapters", {}).pop(cid, None)
         self.pages.pop(cid, None)
         await self.s.delete("chapters", cid)
+        fps = await self.chapter_fps(code)
+        if fps.pop(cid, None) is not None:
+            await self.s.set("fps", code, fps, merge=False)
         # xaritadan bitta kalitni o'chirish uchun manga hujjatini to'liq qayta yozamiz
         doc = {k: v for k, v in m.items() if k != "code"}
         await self.s.set("manga", code, doc, merge=False)

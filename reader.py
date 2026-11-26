@@ -72,8 +72,9 @@ def card_text(m, u):
     if any(int(c.get("price") or 0) > 0 for c in chs):
         info += " · 💎 pullik boblar bor"
     lines.append(info + f" · 👁 {m.get('views', 0)}")
-    if m.get("status"):
-        lines.append(f"📌 Holati: {esc(m['status'])}")
+    st, days = catalog.status_text(m), catalog.days_text(m.get("days"))
+    if st or days:
+        lines.append(" · ".join(x for x in (st, f"📅 {days}" if days else "") if x))
     head = "\n".join(lines)
     desc = (m.get("desc") or "").strip()
     room = 1000 - len(head)
@@ -196,7 +197,7 @@ async def show_chapters(cb_or_msg, code, page, uid):
     for c in part:
         mark = ""
         if not c.get("published"):
-            mark = "📝"
+            mark = "⏰" if c.get("sched") else "📝"
         elif not CAT.can_read(uid, u, c):
             mark = "🔒"
         elif (u.get("progress") or {}).get(code) == float(c["num"]):
@@ -563,17 +564,24 @@ async def on_media(msg: Message):
                      reply_markup=MENU)
 
 
-async def notify_followers(code, num):
-    """Yangi bob chop etilganda kuzatuvchilarga xabar yuboradi. Qaytaradi: yuborilganlar soni."""
+async def notify_followers(code, nums):
+    """Yangi bob(lar) chop etilganda kuzatuvchilarga bitta xabar yuboradi. nums — raqam yoki raqamlar ro'yxati.
+    Qaytaradi: yuborilganlar soni."""
     m = CAT.get(code)
-    if not m:
+    nums = sorted(float(n) for n in (nums if isinstance(nums, (list, tuple, set)) else [nums]))
+    if not m or not nums:
         return 0
     sent = 0
-    markup = kb([[("📖 O‘qish", f"r:{code}:{fmt(num)}")], [("🏠 Manga sahifasi", f"m:{code}")]])
+    first = nums[0]
+    if len(nums) == 1:
+        text = f"🔔 <b>{esc(m['title'])}</b>: yangi <b>{fmt(first)}-bob</b> chiqdi!"
+    else:
+        text = f"🔔 <b>{esc(m['title'])}</b>: <b>{len(nums)} ta yangi bob</b> chiqdi ({catalog.ranges(nums)})!"
+    markup = kb([[("📖 O‘qish" if len(nums) == 1 else f"📖 {fmt(first)}-bobdan o‘qish", f"r:{code}:{fmt(first)}")],
+                 [("🏠 Manga sahifasi", f"m:{code}")]])
     for uid in list(m.get("followers", [])):
         try:
-            await retry(lambda: bot.send_message(uid, f"🔔 <b>{esc(m['title'])}</b>: yangi <b>{fmt(num)}-bob</b> "
-                                                      "chiqdi!", reply_markup=markup))
+            await retry(lambda: bot.send_message(uid, text, reply_markup=markup))
             sent += 1
         except TelegramForbiddenError:
             pass

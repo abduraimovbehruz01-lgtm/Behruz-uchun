@@ -41,6 +41,14 @@ SCHEMA = {
                 "required": ["box_2d", "kind", "original", "translation"],
             },
         },
+        "names": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {"original": {"type": "STRING"}, "translation": {"type": "STRING"}},
+                "required": ["original", "translation"],
+            },
+        },
     },
     "required": ["source_language", "blocks"],
 }
@@ -75,6 +83,9 @@ Translation style:
 - Keep "...", "!", "?" like the original. Pure sounds or punctuation (e.g. "...", "?!", "Hmm", "Eh?") stay short.
 - If the text is already in Uzbek, copy it unchanged.
 "source_language": the main language of the page in Uzbek (e.g. "yaponcha", "koreyscha", "xitoycha", "inglizcha").
+"names": proper nouns that appear in the text of this page — character names, places, organizations, skills,
+titles of techniques — each with "original" (as written on the page) and "translation" (how you wrote it in Uzbek).
+At most 10; do not include ordinary words. Empty list if none.
 If the page has no text, return an empty "blocks" list."""
 
 
@@ -143,7 +154,13 @@ def normalize_result(data) -> dict:
     for b in blocks or []:
         if isinstance(b, dict) and isinstance(b.get("box_2d"), list):
             out.append(b)
-    return {"blocks": out, "source_language": str(data.get("source_language") or "").strip()}
+    names = []
+    for n in data.get("names") or []:
+        if isinstance(n, dict):
+            o, t = str(n.get("original") or "").strip(), str(n.get("translation") or "").strip()
+            if o and t and len(o) <= 60 and len(t) <= 60:
+                names.append({"original": o, "translation": t})
+    return {"blocks": out, "source_language": str(data.get("source_language") or "").strip(), "names": names[:15]}
 
 
 def build_prompt(context=None, part=None, glossary=None) -> str:

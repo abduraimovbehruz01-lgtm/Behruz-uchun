@@ -3,7 +3,11 @@ import asyncio
 import html
 import logging
 import os
+import re
+import shutil
+import tempfile
 import time
+from urllib.parse import quote, unquote, urlparse
 
 import aiohttp
 from aiogram import Bot
@@ -48,7 +52,9 @@ STORAGE_CHAT_ENV = os.environ.get("STORAGE_CHAT", "").strip()
 TEST_KEY = os.environ.get("TEST_KEY", "").strip()
 PUBLIC_URL = (os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").strip().rstrip("/")
 PORT = _int("PORT", 10000)
-MAX_DOWNLOAD = 20 * 1024 * 1024
+MAX_DOWNLOAD = 20 * 1024 * 1024                    # Telegram botlarga shundan katta faylni bermaydi
+MAX_LINK = max(20, _int("MAX_LINK_MB", 500)) * 1024 * 1024   # havola orqali yuklanadigan fayl chegarasi
+TMP_ROOT = os.path.join(tempfile.gettempdir(), "manhora")
 
 GEM = translator.Translator(os.environ.get("GEMINI_API_KEY", ""), os.environ.get("GEMINI_MODEL") or None)
 GEM_SEM = asyncio.Semaphore(PARALLEL)
@@ -127,6 +133,128 @@ async def download(file_id: str, timeout: int = 180) -> bytes:
     return buf.read()
 
 
+async def download_to(file_id: str, path: str, timeout: int = 300) -> str:
+    """Telegram faylini to'g'ridan-to'g'ri diskka yozadi (xotirani tejaydi)."""
+    await bot.download(file_id, destination=path, timeout=timeout)
+    return path
+
+
+def user_tmp(uid, fresh=False) -> str:
+    """Har bir admin uchun vaqtinchalik papka (yuklangan fayllar shu yerda turadi)."""
+    d = os.path.join(TMP_ROOT, str(uid))
+    if fresh:
+        shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+async def jlog(e, text: str):
+    """Admin harakatini jurnalga yozish. e — xabar/tugma (from_user bilan) yoki foydalanuvchi ID si."""
+    fu = getattr(e, "from_user", None)
+    if fu is not None:
+        uid, name = fu.id, (CAT.admins.get(fu.id) or {}).get("name") or fu.first_name or ""
+    else:
+        uid = int(e or 0)
+        name = CAT.admin_name(uid) if uid else "⏰ Avtomatik"
+    await CAT.log_action(uid, name, text)
+
+
+# ---------------------------------------------------------------- havola orqali katta fayl
+
+class LinkError(Exception):
+    pass
+
+
+_URL = re.compile(r"https?://[^\s<>\"']+")
+
+
+def find_url(text: str):
+    m = _URL.search(text or "")
+    return m.group(0).rstrip(").,;»]") if m else None
+
+
+def direct_url(url: str):
+    """Google Drive / Dropbox / Yandex Disk havolasini to'g'ridan-to'g'ri yuklab olish havolasiga aylantiradi."""
+    u = url.strip()
+    if re.search(r"drive\.google\.com/drive/(?:u/\d+/)?folders", u):
+        raise LinkError("Bu Google Drive <b>papkasi</b>. Papkani ZIP qilib, o‘sha ZIP faylning havolasini yuboring.")
+    m = (re.search(r"drive\.google\.com/(?:file/d/|open\?id=|uc\?(?:[^#]*&)?id=)([\w-]{10,})", u)
+         or re.search(r"drive\.usercontent\.google\.com/.*?[?&]id=([\w-]{10,})", u))
+    if m:
+        return f"https://drive.usercontent.google.com/download?id={m.group(1)}&export=download&confirm=t", "gdrive"
+    if "dropbox.com/" in u:
+        u = re.sub(r"([?&])dl=0", r"\1dl=1", u)
+        if not re.search(r"[?&]dl=1", u):
+            u += ("&" if "?" in u else "?") + "dl=1"
+        return u, "dropbox"
+    if re.search(r"(?:disk\.yandex\.\w+|yadi\.sk)/", u):
+        return u, "yandex"
+    return u, "direct"
+
+
+def _cd_name(cd: str) -> str:
+    m = re.search(r"filename\*=(?:UTF-8|utf-8)''([^;]+)", cd or "")
+    if m:
+        return unquote(m.group(1).strip().strip('"'))
+    m = re.search(r'filename="?([^";]+)"?', cd or "")
+    return m.group(1).strip() if m else ""
+
+
+async def fetch_url(url: str, dest_dir: str, max_bytes: int = None, progress=None):
+    """Havoladagi faylni diskka yuklab oladi. Qaytaradi: (yo'l, fayl nomi, tur: 'archive'|'pdf')."""
+    import chapters
+    max_bytes = max_bytes or MAX_LINK
+    u, kind = direct_url(url)
+    tmo = aiohttp.ClientTimeout(total=3600, sock_connect=30, sock_read=180)
+    if kind == "yandex":
+        api = "https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=" + quote(u, safe="")
+        async with http().get(api, timeout=aiohttp.ClientTimeout(total=60)) as r:
+            if r.status != 200:
+                raise LinkError("Yandex Disk havolasi ochilmadi — fayl hammaga ochiq ekanini tekshiring.")
+            u = (await r.json(content_type=None) or {}).get("href") or ""
+        if not u:
+            raise LinkError("Yandex Disk fayl havolasini bermadi.")
+    path = os.path.join(dest_dir, "havola_" + os.urandom(4).hex())
+    try:
+        async with http().get(u, timeout=tmo, allow_redirects=True) as r:
+            if r.status in (401, 403, 404):
+                raise LinkError("Faylga kirib bo‘lmadi — havola «hamma ko‘ra oladigan» qilinganini tekshiring.")
+            if r.status != 200:
+                raise LinkError(f"Havola ochilmadi (HTTP {r.status}).")
+            ctype = (r.headers.get("Content-Type") or "").lower()
+            size = int(r.headers.get("Content-Length") or 0)
+            if size > max_bytes:
+                raise LinkError(f"Fayl juda katta ({size // 1048576} MB). Eng ko‘pi {max_bytes // 1048576} MB.")
+            name = (_cd_name(r.headers.get("Content-Disposition", ""))
+                    or unquote(urlparse(str(getattr(r, "url", u))).path.rsplit("/", 1)[-1]) or "fayl")
+            got, last = 0, time.time()
+            with open(path, "wb") as f:
+                async for chunk in r.content.iter_chunked(1 << 17):
+                    got += len(chunk)
+                    if got > max_bytes:
+                        raise LinkError(f"Fayl juda katta. Eng ko‘pi {max_bytes // 1048576} MB.")
+                    f.write(chunk)
+                    if progress and time.time() - last > 5:
+                        last = time.time()
+                        try:
+                            await progress(got, size)
+                        except Exception:
+                            pass
+        ftype = chapters.sniff(path)
+        if not ftype:
+            if "text/html" in ctype:
+                raise LinkError("Havoladan fayl o‘rniga sahifa keldi. Google Drive’da faylni «Havolasi bor har kim» "
+                                "ko‘ra oladigan qilib qo‘ying va qayta yuboring.")
+            raise LinkError("Yuklangan fayl ZIP/CBZ yoki PDF emas.")
+        return path, name, ftype
+    except BaseException:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
+
+
 def gem_error_text(e: translator.GeminiError) -> str:
     if e.kind == "quota":
         return ("😔 Bugun Google Gemini’ning bepul limiti tugadi.\n"
@@ -200,7 +328,9 @@ def sub_markup(miss, after=""):
     for i, c in enumerate(miss, 1):
         url = c.get("url") or (f"https://t.me/{str(c['id']).lstrip('@')}" if not str(c["id"]).lstrip("-").isdigit()
                                else "https://t.me")
-        rows.append([(f"📢 {i}-kanal" if len(miss) > 1 else "📢 Kanalga o‘tish", "url:" + url)])
+        title = (c.get("title") or "").strip()
+        label = f"📢 {title[:40]}" if title else (f"📢 {i}-kanal" if len(miss) > 1 else "📢 Kanalga o‘tish")
+        rows.append([(label, "url:" + url)])
     rows.append([("✅ Obuna bo‘ldim", "sub" + (":" + after if after else ""))])
     return kb(rows)
 
@@ -217,8 +347,10 @@ def set_ctx(uid, lines):
         CONTEXT[uid] = (time.time(), lines[-14:])
 
 
-async def translate_image(img, uid: int, notify=None):
+async def translate_image(img, uid: int, notify=None, glossary=None, names=None):
     """Sahifani (kerak bo'lsa bo'laklab) Gemini'ga yuboradi va tarjimani rasmga yozadi.
+    glossary — [(asl, tarjima), ...] (ismlar har doim shunday yoziladi); names — ro'yxat berilsa, sahifadagi
+    ismlar/atamalar shunga qo'shiladi (glossariyga taklif qilish uchun).
     Qaytaradi: (yangi rasm, bloklar, asl til)."""
     segs = await asyncio.to_thread(typeset.split_points, img)
     w = img.width
@@ -229,7 +361,10 @@ async def translate_image(img, uid: int, notify=None):
         seg = img if len(segs) == 1 else img.crop((0, y0, w, y1))
         jpeg = await asyncio.to_thread(typeset.api_image, seg)
         async with GEM_SEM:
-            res = await GEM.read_page(http(), jpeg, context=ctx, part=(k, len(segs)), notify=notify)
+            res = await GEM.read_page(http(), jpeg, context=ctx, part=(k, len(segs)), glossary=glossary or None,
+                                      notify=notify)
+        if names is not None:
+            names.extend(res.get("names") or [])
         blocks = typeset.blocks_from_model(res["blocks"], seg.width, seg.height)
         lang = lang or res.get("source_language", "")
         if blocks:

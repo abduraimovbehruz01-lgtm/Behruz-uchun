@@ -1,10 +1,13 @@
 """Manhora — manga va manhvalarni o'zbek tilida o'qish boti (tarjima vositasi bilan).
 
 Qismlar:
-  reader.py  — foydalanuvchilar: kod, katalog, qidiruv, o'qish, sevimlilar, kuzatish, jeton bilan ochish
-  admin.py   — adminlar: manga va boblarni boshqarish, bob yuklash (tarjima bilan), ombor kanali
-  tools.py   — adminlar uchun tezkor tarjima (sahifa/fayl yuborsa — tarjima qilib qaytaradi)
-  core.py    — umumiy sozlamalar; catalog.py — katalog mantiqi; store.py — Firebase/xotira
+  reader.py    — foydalanuvchilar: kod, katalog, qidiruv, o'qish, sevimlilar, kuzatish, jeton bilan ochish
+  admin.py     — admin panel: manga va boblar, bittalab va ko'p bobni yuklash, chop etish, rejalashtirish
+  staff.py     — adminlar va huquqlar, jurnal, majburiy obuna, ombor kanali
+  editor.py    — bob sahifalarini tahrirlash, bob nomi, glossariy
+  scheduler.py — rejalashtirilgan boblarni vaqtida chop etish
+  tools.py     — adminlar uchun tezkor tarjima (sahifa/fayl yuborsa — tarjima qilib qaytaradi)
+  core.py      — umumiy sozlamalar; catalog.py — katalog mantiqi; store.py — Firebase/xotira
   translator.py, typeset.py, chapters.py — tarjima, rasmga yozish, PDF/ZIP
 
 Sozlamalar (Render → Environment):
@@ -23,14 +26,17 @@ from aiogram import Dispatcher, F
 from aiogram.types import BotCommand
 
 import admin
+import editor
 import reader
+import scheduler
+import staff
 import tools
 import typeset
 import translator
 from core import CAT, GEM, PORT, PUBLIC_URL, STATE, TEST_KEY, TOKEN, bot, http, log, tell_owners, translate_image
 
 dp = Dispatcher()
-for r in (admin.router, tools.router, reader.router):
+for r in (admin.router, staff.router, editor.router, tools.router, reader.router):
     r.message.filter(F.chat.type == "private")
     dp.include_router(r)
 
@@ -58,11 +64,13 @@ async def sinov(req: web.Request):
 
 
 def busy() -> bool:
-    return bool(tools.QUEUES or tools.CURRENT or admin.JOBS or reader.READING)
+    return bool(tools.QUEUES or tools.CURRENT or admin.JOBS or admin.DOWNLOADING or reader.READING
+                or scheduler.soon())
 
 
 async def keepalive():
-    """Bepul serverda 15 daqiqa so'rov kelmasa, server uxlaydi. Uzun ish paytida o'zimizni uyg'oq tutamiz."""
+    """Bepul serverda 15 daqiqa so'rov kelmasa, server uxlaydi. Uzun ish paytida va yaqin orada rejadagi bob
+    chiqishi kerak bo'lganda o'zimizni uyg'oq tutamiz."""
     while True:
         await asyncio.sleep(240)
         if PUBLIC_URL and busy():
@@ -81,6 +89,7 @@ async def on_startup():
         log.exception("Katalogni yuklab bo‘lmadi")
         await tell_owners(f"⚠️ Bazadan katalogni yuklab bo‘lmadi: <code>{str(e)[:300]}</code>", force=True)
     asyncio.create_task(keepalive())
+    asyncio.create_task(scheduler.loop())
     log.info("Gemini: %s", await GEM.check(http()))
     try:
         await bot.set_my_commands([
