@@ -504,7 +504,7 @@ class Catalog:
             if u is None:
                 u = {"name": name or "", "username": username or "", "joined": time.time(),
                      "jetons": int(self.cfg.get("start_jetons") or 0), "vip_until": 0, "bought": [], "favs": [],
-                     "follows": [], "progress": {}, "blocked": False}
+                     "follows": [], "progress": {}, "blocked": False, "kb": ""}
                 await self.s.set("users", uid, u, merge=False)
                 await self.s.incr("stats", today(), "new_users", 1)
                 await self.s.incr("stats", "total", "users", 1)

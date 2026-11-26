@@ -14,7 +14,8 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
-from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, ReplyParameters
+from aiogram.types import (BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, KeyboardButton,
+                           ReplyKeyboardMarkup, ReplyKeyboardRemove, ReplyParameters)
 
 import catalog
 import store
@@ -96,6 +97,43 @@ def kb(rows) -> InlineKeyboardMarkup:
         if r:
             out.append(r)
     return InlineKeyboardMarkup(inline_keyboard=out)
+
+
+# ---------------------------------------------------------------- admin paneli: pastki (oddiy) tugmalar
+A_ADD, A_LIST, A_CHAP, A_SCHED = "➕ Manga qo‘shish", "📚 Mangalar", "📤 Bob qo‘shish", "⏰ Rejadagilar"
+A_STAT, A_JOURNAL, A_ADMINS, A_SUBS = "📊 Statistika", "📜 Jurnal", "👥 Adminlar", "📢 Majburiy obuna"
+A_EXIT = "🚪 Paneldan chiqish"
+ADMIN_BUTTONS = (A_ADD, A_LIST, A_CHAP, A_SCHED, A_STAT, A_JOURNAL, A_ADMINS, A_SUBS, A_EXIT)
+
+
+def admin_keyboard(uid) -> ReplyKeyboardMarkup:
+    """Admin paneli — ekran pastidagi doimiy tugmalar (faqat admin huquqlari bo'yicha)."""
+    rows = []
+    if CAT.has(uid, "manga"):
+        rows.append([A_ADD, A_LIST])
+    if CAT.has(uid, "chapter"):
+        rows.append([A_CHAP, A_SCHED])
+    r = []
+    if CAT.has(uid, "stats"):
+        r.append(A_STAT)
+    if CAT.is_owner(uid) or CAT.has(uid, "settings"):
+        r.append(A_JOURNAL)
+    if r:
+        rows.append(r)
+    r = []
+    if CAT.is_owner(uid):
+        r.append(A_ADMINS)
+    if CAT.has(uid, "settings"):
+        r.append(A_SUBS)
+    if r:
+        rows.append(r)
+    rows.append([A_EXIT])
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=t) for t in row] for row in rows], resize_keyboard=True,
+                               is_persistent=True, input_field_placeholder="Admin panel")
+
+
+def no_keyboard() -> ReplyKeyboardRemove:
+    return ReplyKeyboardRemove()
 
 
 async def safe_edit(msg, text, markup=None):

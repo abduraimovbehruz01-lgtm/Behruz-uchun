@@ -39,6 +39,10 @@ def last(kind=None, chat=None, has=None):
             return e
 
 
+def kb_texts(markup):
+    return [b.k.get("text") for row in markup.k["keyboard"] for b in row]
+
+
 def cb(uid, data, message=None):
     return T.CallbackQuery(data, T.User(uid), message or T.Sent(uid, "x"))
 
@@ -112,8 +116,10 @@ async def main():
     assert CAT.rights(HELPER) == set()
     await staff.cb_rights(cb(OWN, f"adm:ar:{HELPER}:chapter"))
     # cheklangan admin: faqat bob yuklash
-    mk = T.buttons(admin.menu_markup(HELPER))
-    assert "adm:chap" in mk and "adm:add" not in mk and "adm:admins" not in mk and "adm:subs" not in mk
+    mk = kb_texts(core.admin_keyboard(HELPER))
+    assert core.A_CHAP in mk and core.A_ADD not in mk and core.A_ADMINS not in mk and core.A_SUBS not in mk
+    await admin.on_admin_button(T.Msg(HELPER, core.A_ADD), T.FSM())
+    assert "huquq" in last("msg", HELPER)[2]
     c = cb(HELPER, "adm:add"); await admin.cb_add(c, T.FSM()); assert "huquq" in c.answers[-1]
     c = cb(HELPER, "adm:admins"); await staff.cb_admins(c, T.FSM()); assert "huquq" in c.answers[-1]
     assert "huquq" not in admin.menu_text(HELPER)
@@ -388,10 +394,56 @@ async def main():
     assert len(store2.journal) == len(CAT.journal) and store2.get("101")["glossary"] == []
     print("ok: jurnal (", len(CAT.journal), "yozuv) va bazadan qayta yuklanadi")
 
-    # admin menyusi
-    mt, mk = admin.menu_text(OWN), T.buttons(admin.menu_markup(OWN))
-    assert "«Ombor»" in mt and "1 ta kanal" in mt and {"adm:admins", "adm:subs", "adm:journal:0", "adm:sched"} <= set(mk)
-    print("ok: admin menyusi")
+    # admin paneli — pastki tugmalar
+    st2 = T.FSM()
+    await admin.cmd_admin(T.Msg(OWN, "/admin"), st2)
+    pm = last("msg", OWN)
+    assert "«Ombor»" in pm[2] and "1 ta kanal" in pm[2] and pm[3].__class__.__name__ == "Rec"
+    assert {core.A_ADMINS, core.A_SUBS, core.A_JOURNAL, core.A_SCHED, core.A_EXIT} <= set(kb_texts(pm[3]))
+    assert (await CAT.user(OWN))["kb"] == "admin"
+    await admin.on_admin_button(T.Msg(OWN, core.A_LIST), st2)
+    assert "Mangalar" in last("msg", OWN)[2] and "am:101" in T.buttons(last("msg", OWN)[3])
+    await admin.cb_add(cb(OWN, "adm:add"), st2)                      # yarim yo'lda boshqa tugma bosildi
+    await admin.on_admin_button(T.Msg(OWN, core.A_STAT), st2)
+    assert st2.state is None and "Statistika" in last("msg", OWN)[2]
+    await admin.on_admin_button(T.Msg(OWN, core.A_JOURNAL), st2)
+    assert "Jurnal" in last("msg", OWN)[2]
+    await admin.on_admin_button(T.Msg(OWN, core.A_ADMINS), st2)
+    assert "Bosh admin" in last("msg", OWN)[2]
+    await admin.on_admin_button(T.Msg(OWN, core.A_SUBS), st2)
+    assert "Majburiy obuna" in last("msg", OWN)[2]
+    await admin.on_admin_button(T.Msg(OWN, core.A_SCHED), st2)
+    assert "Rejalashtirilgan" in last("msg", OWN)[2]
+    await admin.on_admin_button(T.Msg(OWN, core.A_EXIT), st2)
+    ex = [e for e in T.LOG if e[0] == "msg" and e[1] == OWN][-2:]
+    assert "chiqdingiz" in ex[0][2] and "Assalomu alaykum" in ex[1][2] and "u:cat" in T.buttons(ex[1][3])
+    assert (await CAT.user(OWN))["kb"] == ""
+    print("ok: admin paneli pastki tugmalarda, bo'limlar ochiladi, paneldan chiqish")
+
+    # foydalanuvchi menyusi — inline tugmalar
+    await reader.cmd_start(T.Msg(USR, "/start"), T.Rec(args=None))
+    w = last("msg", USR)
+    assert "Assalomu alaykum" in w[2] and {"u:cat", "u:pop", "u:fav", "u:cont", "u:acc", "u:find"} <= set(T.buttons(w[3]))
+    menu_msg = T.Sent(USR, w[2])
+    await reader.cb_home(cb(USR, "u:cat", menu_msg))
+    e = last("edit", USR); assert "Katalog" in e[2] and "m:101" in T.buttons(e[3]) and "u:home" in T.buttons(e[3])
+    await reader.cb_home(cb(USR, "u:cont", menu_msg))
+    assert "Davom ettirish" in last("edit", USR)[2] or "o‘qimadingiz" in last("edit", USR)[2]
+    await reader.cb_home(cb(USR, "u:acc", menu_msg))
+    assert "Hisobim" in last("edit", USR)[2]
+    await reader.cb_home(cb(USR, "u:home", menu_msg))
+    assert "Assalomu alaykum" in last("edit", USR)[2] and "u:pop" in T.buttons(last("edit", USR)[3])
+    # eski versiyadan pastki tugmasi qolgan foydalanuvchi: bir marta olib tashlanadi
+    await CAT.s.set("users", 4242, {"name": "Eski", "username": "", "joined": 1, "jetons": 0}, merge=False)
+    await reader.cmd_start(T.Msg(4242, "/start"), T.Rec(args=None))
+    old = [e for e in T.LOG if e[0] == "msg" and e[1] == 4242]
+    assert len(old) == 2 and "yangilandi" in old[0][2] and old[0][3].__class__.__name__ == "Rec" and \
+        "Assalomu alaykum" in old[1][2]
+    await reader.cmd_start(T.Msg(4242, "/start"), T.Rec(args=None))
+    assert len([e for e in T.LOG if e[0] == "msg" and e[1] == 4242]) == 3
+    await reader.on_catalog(T.Msg(4242, reader.B_CATALOG))          # eski tugma ham ishlaydi
+    assert "Katalog" in last("msg", 4242)[2]
+    print("ok: foydalanuvchi menyusi inline, eski pastki tugmalar bir marta olib tashlandi")
 
 
 asyncio.run(main()); print("HAMMASI O'TDI")

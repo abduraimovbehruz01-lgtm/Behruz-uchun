@@ -1,5 +1,5 @@
 """Foydalanuvchilar qismi: manga kodi, katalog, qidiruv, manga kartasi, boblar, botda o'qish (albom/PDF),
-sevimlilar, kuzatish, jeton bilan bob ochish."""
+sevimlilar, kuzatish, jeton bilan bob ochish. Foydalanuvchi menyusi — xabar ostidagi (inline) tugmalar."""
 import asyncio
 import os
 import re
@@ -11,34 +11,55 @@ from datetime import datetime
 from aiogram import F, Router
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import (CallbackQuery, FSInputFile, InputMediaPhoto, KeyboardButton, Message,
-                           ReplyKeyboardMarkup)
+from aiogram.types import CallbackQuery, FSInputFile, InputMediaPhoto, Message
 
 import catalog
 import chapters as chapfiles
-from core import CAT, SUB_OK, bot, esc, kb, log, missing_channels, retry, safe_delete, safe_edit, sub_markup
-from core import download, STATE, rp
+from core import CAT, SUB_OK, bot, esc, kb, log, missing_channels, no_keyboard, retry, safe_delete, sub_markup
+from core import download, STATE
 
 router = Router(name="reader")
 fmt = catalog.fmt_num
 READING: dict[int, float] = {}
 
+# eski pastki tugmalar — avvalgi versiyadan foydalanuvchilarda qolgan bo'lishi mumkin, ular ham ishlayveradi
 B_CATALOG, B_POPULAR, B_FAVS, B_CONT, B_ACC, B_SEARCH = (
     "📚 Katalog", "🔥 Mashhur", "❤️ Sevimlilar", "📖 Davom ettirish", "💰 Hisobim", "🔎 Qidirish")
-MENU = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text=B_CATALOG), KeyboardButton(text=B_POPULAR)],
-    [KeyboardButton(text=B_FAVS), KeyboardButton(text=B_CONT)],
-    [KeyboardButton(text=B_ACC), KeyboardButton(text=B_SEARCH)],
-], resize_keyboard=True)
+HOME = ("🏠 Bosh menyu", "u:home")
 PAGE = 10
 
 
-def welcome(name):
-    return (f"👋 Assalomu alaykum, {esc(name)}!\n\n"
+def home_markup():
+    return kb([[(B_CATALOG, "u:cat"), (B_POPULAR, "u:pop")],
+               [(B_FAVS, "u:fav"), (B_CONT, "u:cont")],
+               [(B_ACC, "u:acc"), (B_SEARCH, "u:find")]])
+
+
+def welcome(name, uid=None):
+    text = (f"👋 Assalomu alaykum, {esc(name)}!\n\n"
             "📚 Bu yerda manga va manhvalarni <b>o‘zbek tilida</b> o‘qiysiz.\n\n"
             "🔢 Manga <b>kodini</b> yuboring (masalan <code>101</code>) — darhol ochiladi.\n"
-            "📚 «Katalog» — barcha mangalar, 🔎 nomini yozsangiz — qidirib topaman.\n"
+            "🔎 Nomini yozsangiz — qidirib topaman.\n"
             "🔔 Mangani kuzatsangiz, yangi bob chiqqanda xabar beraman.")
+    if uid is not None and CAT.is_admin(uid):
+        text += "\n\n🛠 Admin panel: /admin"
+    return text
+
+
+async def drop_old_keyboard(chat_id, uid, u):
+    """Oldingi versiyaning pastki tugmalari qolgan bo'lsa — bir marta olib tashlaydi."""
+    state = u.get("kb", "menu")
+    if not state or (state == "admin" and CAT.is_admin(uid)):
+        return
+    await bot.send_message(chat_id, "🔄 Menyu yangilandi — tugmalar endi xabar ostida 👇", reply_markup=no_keyboard())
+    await CAT.save_user(uid, kb="")
+
+
+async def send_home(chat_id, uid, name, u=None):
+    """Bosh menyu: salomlashish va inline tugmalar."""
+    u = u or await CAT.user(uid)
+    await drop_old_keyboard(chat_id, uid, u)
+    await bot.send_message(chat_id, welcome(name, uid), reply_markup=home_markup())
 
 
 async def who(event):
@@ -112,7 +133,8 @@ def card_markup(m, u, uid):
     fol = code in (u.get("follows") or [])
     rows.append([("💔 Sevimlidan olish" if fav else "❤️ Sevimli", f"fav:{code}"),
                  ("🔕 Kuzatishni to‘xtatish" if fol else "🔔 Kuzatish", f"fol:{code}")])
-    rows.append([("📤 Ulashish", f"url:https://t.me/share/url?url=https://t.me/{STATE['username']}?start={code}")])
+    rows.append([("📤 Ulashish", f"url:https://t.me/share/url?url=https://t.me/{STATE['username']}?start={code}"),
+                 HOME])
     if CAT.is_admin(uid):
         rows.append([("⚙️ Boshqarish (admin)", f"am:{code}")])
     return kb(rows)
@@ -141,7 +163,8 @@ async def show_card(chat_id, m, uid, u=None, edit=None):
 
 # ---------------------------------------------------------------- ro'yxatlar
 
-def manga_rows(items, page, nav_prefix, back=None):
+def manga_rows(items, page, nav_prefix, tail=None):
+    """Mangalar ro'yxati tugmalari. tail — oxirgi qatordagi tugmalar (masalan Janrlar, Bosh menyu)."""
     total = len(items)
     part = items[page * PAGE:(page + 1) * PAGE]
     rows = [[(f"{m['title'][:40]} · {len(CAT.chapter_list(m['code']))} bob", f"m:{m['code']}")] for m in part]
@@ -152,8 +175,7 @@ def manga_rows(items, page, nav_prefix, back=None):
         nav.append(("➡️", f"{nav_prefix}:{page + 1}"))
     if nav:
         rows.append(nav)
-    if back:
-        rows.append([back])
+    rows.append(list(tail) if tail else [HOME])
     return kb(rows)
 
 
@@ -175,13 +197,59 @@ async def send_or_edit(cb_or_msg, text, markup):
 async def show_catalog(event, page=0, genre=None):
     items = CAT.manga_list(genre=genre)
     if not items:
-        await send_or_edit(event, "📭 Hozircha katalog bo‘sh — tez orada mangalar qo‘shiladi.", None)
+        await send_or_edit(event, "📭 Hozircha katalog bo‘sh — tez orada mangalar qo‘shiladi.", kb([[HOME]]))
         return
     title = f"📚 <b>Katalog</b>{' · ' + esc(genre) if genre else ''} — {len(items)} ta manga\n(oxirgi yangilanganlar tepada)"
     gi = CAT.genres()
-    back = ("🏷 Janrlar", "gen") if gi and not genre else (("📚 Hammasi", "cat:0") if genre else None)
+    tail = [("🏷 Janrlar", "gen")] if gi and not genre else ([("📚 Hammasi", "cat:0")] if genre else [])
     prefix = f"catg:{CAT.genres().index(genre)}" if genre in gi else "cat"
-    await send_or_edit(event, title, manga_rows(items, page, prefix, back))
+    await send_or_edit(event, title, manga_rows(items, page, prefix, tail + [HOME]))
+
+
+def popular_view():
+    items = CAT.popular(10)
+    if not items:
+        return "📭 Hozircha katalog bo‘sh.", kb([[HOME]])
+    rows = [[(f"{i}. {m['title'][:38]} · 👁 {m.get('views', 0)}", f"m:{m['code']}")] for i, m in enumerate(items, 1)]
+    rows.append([HOME])
+    return "🔥 <b>Eng ko‘p o‘qilganlar</b>", kb(rows)
+
+
+def favs_view(u, page=0):
+    items = [CAT.get(c) for c in u.get("favs", []) if CAT.get(c)]
+    if not items:
+        return ("❤️ Sevimlilar ro‘yxatingiz bo‘sh. Manga sahifasida «❤️ Sevimli» tugmasini bosing.",
+                kb([[(B_CATALOG, "u:cat"), HOME]]))
+    return "❤️ <b>Sevimlilaringiz</b>", manga_rows(items, page, "favp")
+
+
+def continue_view(u):
+    prog = u.get("progress") or {}
+    items = [(code, num) for code, num in prog.items() if CAT.get(code)]
+    if not items:
+        return ("📖 Hali hech narsa o‘qimadingiz. Katalogdan boshlang yoki manga kodini yuboring.",
+                kb([[(B_CATALOG, "u:cat"), HOME]]))
+    last = u.get("last")
+    items.sort(key=lambda x: x[0] != last)
+    rows = []
+    for code, num in items[:10]:
+        m = CAT.get(code)
+        nxt = CAT.neighbor(code, num)
+        target = nxt or CAT.chapter(code, num)
+        if target:
+            lbl = f"{m['title'][:30]} → {fmt(target['num'])}-bob" + ("" if nxt else " ✓")
+            rows.append([(lbl, f"r:{code}:{fmt(target['num'])}")])
+    rows.append([HOME])
+    return "📖 <b>Davom ettirish</b>", kb(rows)
+
+
+def account_view(u, uid):
+    vip = float(u.get("vip_until") or 0)
+    vip_t = (f"✅ {datetime.fromtimestamp(vip, catalog.TZ).strftime('%d.%m.%Y %H:%M')} gacha"
+             if vip > time.time() else "yo‘q")
+    return (f"💰 <b>Hisobim</b>\n\n🪙 Jetonlar: <b>{int(u.get('jetons') or 0)}</b>\n💎 VIP: {vip_t}\n"
+            f"🔓 Sotib olingan boblar: {len(u.get('bought') or [])}\n🆔 ID: <code>{uid}</code>",
+            kb([[("🪙 Jeton sotib olish", "shop"), ("💎 VIP olish", "vipshop")], [HOME]]))
 
 
 async def show_chapters(cb_or_msg, code, page, uid):
@@ -320,7 +388,7 @@ async def cmd_start(msg: Message, command: CommandObject = None):
     if not await check_sub(msg, arg):
         return
     if not arg:
-        await msg.answer(welcome(msg.from_user.first_name or "do‘stim"), reply_markup=MENU)
+        await send_home(msg.chat.id, msg.from_user.id, msg.from_user.first_name or "do‘stim", u)
         return
     await open_arg(msg.chat.id, msg.from_user.id, arg)
 
@@ -334,7 +402,7 @@ async def open_arg(chat_id, uid, arg):
     if m and (not m.get("hidden") or CAT.is_admin(uid)):
         await show_card(chat_id, m, uid)
     else:
-        await bot.send_message(chat_id, "🤷 Bunday kodli manga topilmadi.", reply_markup=MENU)
+        await bot.send_message(chat_id, "🤷 Bunday kodli manga topilmadi.", reply_markup=kb([[(B_CATALOG, "u:cat"), HOME]]))
 
 
 @router.callback_query(F.data.startswith("sub"))
@@ -350,7 +418,7 @@ async def cb_sub(c: CallbackQuery):
     if arg:
         await open_arg(c.from_user.id, c.from_user.id, arg)
     else:
-        await bot.send_message(c.from_user.id, welcome(c.from_user.first_name or "do‘stim"), reply_markup=MENU)
+        await send_home(c.from_user.id, c.from_user.id, c.from_user.first_name or "do‘stim")
 
 
 HELP = ("💡 <b>Qanday foydalaniladi</b>\n\n"
@@ -363,78 +431,87 @@ HELP = ("💡 <b>Qanday foydalaniladi</b>\n\n"
 
 @router.message(Command("yordam", "help"))
 async def cmd_help(msg: Message):
-    await msg.answer(HELP, reply_markup=MENU)
+    await msg.answer(HELP, reply_markup=kb([[HOME]]))
+
+
+@router.callback_query(F.data.startswith("u:"))
+async def cb_home(c: CallbackQuery):
+    """Bosh menyu (inline): katalog, mashhur, sevimlilar, davom ettirish, hisob, qidiruv."""
+    u = await who(c)
+    if u is None:
+        await c.answer()
+        return
+    act, uid = c.data[2:], c.from_user.id
+    if act in ("cat", "pop", "find") and not await check_sub(c):
+        return
+    if act == "cat":
+        await show_catalog(c)
+        return
+    if act == "pop":
+        text, markup = popular_view()
+    elif act == "fav":
+        text, markup = favs_view(u)
+    elif act == "cont":
+        text, markup = continue_view(u)
+    elif act == "acc":
+        text, markup = account_view(u, uid)
+    elif act == "find":
+        text, markup = "🔎 Manga nomini yozing (yoki kodini yuboring):", kb([[HOME]])
+    else:
+        text, markup = welcome(c.from_user.first_name or "do‘stim", uid), home_markup()
+    await send_or_edit(c, text, markup)
+
+
+# eski pastki tugmalar (avvalgi versiyadan qolganlar) — bosilsa ham ishlaydi, tugmalar esa olib tashlanadi
+async def _old_button(msg: Message, need_sub=False):
+    u = await who(msg)
+    if u is None or (need_sub and not await check_sub(msg)):
+        return None
+    await drop_old_keyboard(msg.chat.id, msg.from_user.id, u)
+    return u
 
 
 @router.message(F.text == B_CATALOG)
 async def on_catalog(msg: Message):
-    if await who(msg) is not None and await check_sub(msg):
+    if await _old_button(msg, True) is not None:
         await show_catalog(msg)
 
 
 @router.message(F.text == B_POPULAR)
 async def on_popular(msg: Message):
-    if await who(msg) is None or not await check_sub(msg):
-        return
-    items = CAT.popular(10)
-    if not items:
-        await msg.answer("📭 Hozircha katalog bo‘sh.")
-        return
-    rows = [[(f"{i}. {m['title'][:38]} · 👁 {m.get('views', 0)}", f"m:{m['code']}")] for i, m in enumerate(items, 1)]
-    await msg.answer("🔥 <b>Eng ko‘p o‘qilganlar</b>", reply_markup=kb(rows))
+    if await _old_button(msg, True) is not None:
+        text, markup = popular_view()
+        await msg.answer(text, reply_markup=markup)
 
 
 @router.message(F.text == B_FAVS)
 async def on_favs(msg: Message):
-    u = await who(msg)
-    if u is None:
-        return
-    items = [CAT.get(c) for c in u.get("favs", []) if CAT.get(c)]
-    if not items:
-        await msg.answer("❤️ Sevimlilar ro‘yxatingiz bo‘sh. Manga sahifasida «❤️ Sevimli» tugmasini bosing.")
-        return
-    await msg.answer("❤️ <b>Sevimlilaringiz</b>", reply_markup=manga_rows(items, 0, "favp"))
+    u = await _old_button(msg)
+    if u is not None:
+        text, markup = favs_view(u)
+        await msg.answer(text, reply_markup=markup)
 
 
 @router.message(F.text == B_CONT)
 async def on_continue(msg: Message):
-    u = await who(msg)
-    if u is None:
-        return
-    prog = u.get("progress") or {}
-    items = [(code, num) for code, num in prog.items() if CAT.get(code)]
-    if not items:
-        await msg.answer("📖 Hali hech narsa o‘qimadingiz. Katalogdan boshlang yoki manga kodini yuboring.")
-        return
-    last = u.get("last")
-    items.sort(key=lambda x: x[0] != last)
-    rows = []
-    for code, num in items[:10]:
-        m = CAT.get(code)
-        nxt = CAT.neighbor(code, num)
-        target = nxt or CAT.chapter(code, num)
-        if target:
-            lbl = f"{m['title'][:30]} → {fmt(target['num'])}-bob" + ("" if nxt else " ✓")
-            rows.append([(lbl, f"r:{code}:{fmt(target['num'])}")])
-    await msg.answer("📖 <b>Davom ettirish</b>", reply_markup=kb(rows))
+    u = await _old_button(msg)
+    if u is not None:
+        text, markup = continue_view(u)
+        await msg.answer(text, reply_markup=markup)
 
 
 @router.message(F.text == B_ACC)
 async def on_account(msg: Message):
-    u = await who(msg)
-    if u is None:
-        return
-    vip = float(u.get("vip_until") or 0)
-    vip_t = (f"✅ {datetime.fromtimestamp(vip, catalog.TZ).strftime('%d.%m.%Y %H:%M')} gacha"
-             if vip > time.time() else "yo‘q")
-    await msg.answer(f"💰 <b>Hisobim</b>\n\n🪙 Jetonlar: <b>{int(u.get('jetons') or 0)}</b>\n💎 VIP: {vip_t}\n"
-                     f"🔓 Sotib olingan boblar: {len(u.get('bought') or [])}\n🆔 ID: <code>{msg.from_user.id}</code>",
-                     reply_markup=kb([[("🪙 Jeton sotib olish", "shop"), ("💎 VIP olish", "vipshop")]]))
+    u = await _old_button(msg)
+    if u is not None:
+        text, markup = account_view(u, msg.from_user.id)
+        await msg.answer(text, reply_markup=markup)
 
 
 @router.message(F.text == B_SEARCH)
 async def on_search_btn(msg: Message):
-    await msg.answer("🔎 Manga nomini yozing (yoki kodini yuboring):")
+    if await _old_button(msg) is not None:
+        await msg.answer("🔎 Manga nomini yozing (yoki kodini yuboring):", reply_markup=kb([[HOME]]))
 
 
 @router.callback_query(F.data.in_({"shop", "vipshop"}))
@@ -467,7 +544,7 @@ async def cb_lists(c: CallbackQuery):
     if d == "gen":
         gs = CAT.genres()
         rows = [[(g, f"catg:{i}:0")] for i, g in enumerate(gs)]
-        rows.append([("📚 Hammasi", "cat:0")])
+        rows.append([("📚 Hammasi", "cat:0"), HOME])
         await send_or_edit(c, "🏷 <b>Janrni tanlang</b>", kb(rows))
     elif d.startswith("catg:"):
         _, gi, page = d.split(":")
@@ -477,7 +554,8 @@ async def cb_lists(c: CallbackQuery):
     elif d.startswith("favp:"):
         u = await CAT.user(c.from_user.id)
         items = [CAT.get(x) for x in u.get("favs", []) if CAT.get(x)]
-        await send_or_edit(c, "❤️ <b>Sevimlilaringiz</b>", manga_rows(items, int(d.split(":")[1]), "favp"))
+        text, markup = favs_view(u, int(d.split(":")[1]))
+        await send_or_edit(c, text, markup)
     else:
         await show_catalog(c, int(d.split(":")[1]))
 
@@ -551,7 +629,7 @@ async def on_text(msg: Message):
     res = CAT.search(msg.text, 10, hidden=CAT.is_admin(msg.from_user.id))
     if not res:
         await msg.answer("🤷 Hech narsa topilmadi. Boshqacha yozib ko‘ring yoki «📚 Katalog»ni oching.",
-                         reply_markup=MENU)
+                         reply_markup=kb([[(B_CATALOG, "u:cat"), HOME]]))
     elif len(res) == 1:
         await show_card(msg.chat.id, res[0], msg.from_user.id)
     else:
@@ -561,7 +639,7 @@ async def on_text(msg: Message):
 @router.message(F.photo | F.document | F.video | F.sticker | F.voice | F.animation)
 async def on_media(msg: Message):
     await msg.answer("📚 Bu bot manga o‘qish uchun. Manga kodini yuboring yoki «📚 Katalog»ni oching.",
-                     reply_markup=MENU)
+                     reply_markup=kb([[(B_CATALOG, "u:cat"), HOME]]))
 
 
 async def notify_followers(code, nums):

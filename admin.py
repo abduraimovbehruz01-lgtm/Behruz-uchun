@@ -17,10 +17,11 @@ import catalog
 import chapters as chapfiles
 import translator
 import typeset
-from core import (CAT, GEM, MAX_DOWNLOAD, MAX_PAGES, STATE, LinkError, bot, channels, download, download_to, esc,
-                  fetch_url, find_url, gem_error_text, jlog, kb, log, safe_delete, safe_edit, storage_chat,
-                  storage_pieces, tell_owners, translate_image, upload_photos, user_tmp)
-from reader import MENU, notify_followers, show_card
+from core import (A_ADD, A_ADMINS, A_CHAP, A_EXIT, A_JOURNAL, A_LIST, A_SCHED, A_STAT, A_SUBS, ADMIN_BUTTONS, CAT, GEM,
+                  MAX_DOWNLOAD, MAX_PAGES, STATE, LinkError, admin_keyboard, bot, channels, download, download_to, esc,
+                  fetch_url, find_url, gem_error_text, jlog, kb, log, no_keyboard, safe_delete, safe_edit,
+                  storage_chat, storage_pieces, tell_owners, translate_image, upload_photos, user_tmp)
+from reader import notify_followers, send_home, show_card
 
 router = Router(name="admin")
 fmt = catalog.fmt_num
@@ -99,28 +100,8 @@ def menu_text(uid=None):
     return "\n".join(lines)
 
 
-def menu_markup(uid):
-    rows = []
-    if CAT.has(uid, "manga"):
-        rows.append([("➕ Manga qo‘shish", "adm:add"), ("📚 Mangalar", "adm:list:0")])
-    if CAT.has(uid, "chapter"):
-        rows.append([("📤 Bob qo‘shish", "adm:chap"), ("⏰ Rejadagilar", "adm:sched")])
-    if CAT.has(uid, "stats"):
-        rows.append([("📊 Statistika", "adm:stat")])
-    r = []
-    if CAT.is_owner(uid):
-        r.append(("👥 Adminlar", "adm:admins"))
-    if CAT.has(uid, "settings"):
-        r.append(("📢 Majburiy obuna", "adm:subs"))
-    rows.append(r)
-    if CAT.is_owner(uid) or CAT.has(uid, "settings"):
-        rows.append([("📜 Jurnal", "adm:journal:0")])
-    return kb(rows)
-
-
-@router.message(Command("admin"), adm)
-async def cmd_admin(msg: Message, state: FSMContext):
-    await state.clear()
+async def send_panel(uid):
+    """Admin paneli: holat matni va ekran pastidagi doimiy tugmalar."""
     st = storage_chat()
     if st and not CAT.cfg.get("storage_title"):   # oldin ulangan ombor kanalining nomini bir marta bilib olamiz
         try:
@@ -129,7 +110,52 @@ async def cmd_admin(msg: Message, state: FSMContext):
                 await CAT.set_cfg(storage_title=ch.title)
         except Exception:
             pass
-    await msg.answer(menu_text(msg.from_user.id), reply_markup=menu_markup(msg.from_user.id))
+    await bot.send_message(uid, menu_text(uid), reply_markup=admin_keyboard(uid))
+    u = await CAT.user(uid)
+    if u.get("kb") != "admin":
+        await CAT.save_user(uid, kb="admin")
+
+
+@router.message(Command("admin"), adm)
+async def cmd_admin(msg: Message, state: FSMContext):
+    await state.clear()
+    await send_panel(msg.from_user.id)
+
+
+@router.message(F.text.in_(set(ADMIN_BUTTONS)), adm)
+async def on_admin_button(msg: Message, state: FSMContext):
+    """Pastki admin tugmalari. Qaysi bosqichda bo'lmasin, tugma bosilsa — o'sha bo'limga o'tiladi."""
+    uid, t = msg.from_user.id, msg.text
+    await state.clear()
+    COLLECT.pop(uid, None)
+    PENDING.pop(uid, None)
+    need = {A_ADD: "manga", A_LIST: "manga", A_CHAP: "chapter", A_SCHED: "chapter", A_STAT: "stats",
+            A_SUBS: "settings"}.get(t)
+    if (need and not CAT.has(uid, need)) or (t == A_ADMINS and not CAT.is_owner(uid)) or \
+            (t == A_JOURNAL and not (CAT.is_owner(uid) or CAT.has(uid, "settings"))):
+        await msg.answer("Bu huquq sizda yo‘q.", reply_markup=admin_keyboard(uid))
+        return
+    import staff
+    if t == A_EXIT:
+        await bot.send_message(uid, "🚪 Admin paneldan chiqdingiz. Qaytish uchun: /admin", reply_markup=no_keyboard())
+        await CAT.save_user(uid, kb="")
+        await send_home(uid, uid, msg.from_user.first_name or "do‘stim")
+    elif t == A_ADD:
+        await start_add_manga(uid, state)
+    elif t == A_LIST:
+        await send_manga_list(uid, 0)
+    elif t == A_CHAP:
+        await choose_manga(uid, state)
+    elif t == A_SCHED:
+        await send_scheduled(uid)
+    elif t == A_STAT:
+        await send_stats(uid)
+    elif t == A_JOURNAL:
+        await staff.send_journal(uid, 0)
+    elif t == A_ADMINS:
+        await staff.send_admins(uid)
+    elif t == A_SUBS:
+        await staff.send_subs(uid)
 
 
 @router.message(Command("bekor"))
@@ -145,7 +171,7 @@ async def cmd_cancel(msg: Message, state: FSMContext):
     import tools
     stopped = tools.cancel(uid)
     await msg.answer("⛔ Bekor qilindi." if (job or had or stopped) else "Hozir hech qanday jarayon yo‘q 🙂",
-                     reply_markup=MENU)
+                     reply_markup=admin_keyboard(uid) if CAT.is_admin(uid) else None)
 
 
 @router.callback_query(F.data == "adm:cancel")
@@ -161,7 +187,16 @@ async def cb_cancel(c: CallbackQuery, state: FSMContext):
 async def cb_menu(c: CallbackQuery, state: FSMContext):
     await state.clear()
     await c.answer()
-    await bot.send_message(c.from_user.id, menu_text(c.from_user.id), reply_markup=menu_markup(c.from_user.id))
+    await send_panel(c.from_user.id)
+
+
+async def send_stats(uid):
+    s = await CAT.stats()
+    await bot.send_message(uid, "📊 <b>Statistika</b>\n\n"
+                                f"📚 Mangalar: {s['manga']} · boblar: {s['chapters']}\n"
+                                f"👥 Foydalanuvchilar: {s['users']} (bugun yangi: {s['new_today']})\n"
+                                f"📖 Bugun o‘qilgan boblar: {s['reads_today']}\n"
+                                f"🪙 Bugun sarflangan jetonlar: {s['jetons_today']}")
 
 
 @router.callback_query(F.data == "adm:stat", adm)
@@ -169,14 +204,8 @@ async def cb_stat(c: CallbackQuery):
     if not can(c, "stats"):
         await deny(c)
         return
-    s = await CAT.stats()
     await c.answer()
-    await bot.send_message(c.from_user.id,
-                           "📊 <b>Statistika</b>\n\n"
-                           f"📚 Mangalar: {s['manga']} · boblar: {s['chapters']}\n"
-                           f"👥 Foydalanuvchilar: {s['users']} (bugun yangi: {s['new_today']})\n"
-                           f"📖 Bugun o‘qilgan boblar: {s['reads_today']}\n"
-                           f"🪙 Bugun sarflangan jetonlar: {s['jetons_today']}")
+    await send_stats(c.from_user.id)
 
 
 # ---------------------------------------------------------------- manga qo'shish
@@ -186,10 +215,14 @@ async def cb_add(c: CallbackQuery, state: FSMContext):
     if not can(c, "manga"):
         await deny(c)
         return
+    await c.answer()
+    await start_add_manga(c.from_user.id, state)
+
+
+async def start_add_manga(uid, state):
     await state.clear()
     await state.set_state(AddManga.title)
-    await c.answer()
-    await bot.send_message(c.from_user.id, "➕ <b>Yangi manga</b>\n\n1/5. Manga nomini yuboring:", reply_markup=kb([[CANCEL]]))
+    await bot.send_message(uid, "➕ <b>Yangi manga</b>\n\n1/5. Manga nomini yuboring:", reply_markup=kb([[CANCEL]]))
 
 
 @router.message(AddManga.title, F.text)
@@ -291,15 +324,18 @@ async def cb_chap(c: CallbackQuery, state: FSMContext):
         await deny(c)
         return
     await c.answer()
+    await choose_manga(c.from_user.id, state)
+
+
+async def choose_manga(uid, state):
     items = CAT.manga_list(hidden=True)[:8]
     if not items:
-        await bot.send_message(c.from_user.id, "Avval manga qo‘shing.", reply_markup=kb([[("➕ Manga qo‘shish", "adm:add")]]))
+        await bot.send_message(uid, "Avval manga qo‘shing.", reply_markup=kb([[("➕ Manga qo‘shish", "adm:add")]]))
         return
     await state.set_state(AddChap.manga)
     rows = [[(f"{m['title'][:40]} ({m['code']})", f"ach:{m['code']}")] for m in items]
     rows.append([CANCEL])
-    await bot.send_message(c.from_user.id, "📤 Qaysi mangaga bob qo‘shamiz? Tanlang yoki kodini yuboring:",
-                           reply_markup=kb(rows))
+    await bot.send_message(uid, "📤 Qaysi mangaga bob qo‘shamiz? Tanlang yoki kodini yuboring:", reply_markup=kb(rows))
 
 
 @router.message(AddChap.manga, F.text)
@@ -1123,9 +1159,13 @@ async def cb_sched(c: CallbackQuery):
         await deny(c)
         return
     await c.answer()
+    await send_scheduled(c.from_user.id)
+
+
+async def send_scheduled(uid):
     items = CAT.scheduled()
     if not items:
-        await bot.send_message(c.from_user.id, "⏰ Rejalashtirilgan bob yo‘q.\n\nBob tayyor bo‘lgach, chop etish o‘rniga "
+        await bot.send_message(uid, "⏰ Rejalashtirilgan bob yo‘q.\n\nBob tayyor bo‘lgach, chop etish o‘rniga "
                                                "«⏰ Keyinroq chiqarish» ni tanlasangiz, u belgilangan vaqtda o‘zi chiqadi.")
         return
     lines = [f"⏰ <b>Rejalashtirilgan boblar</b> — {len(items)} ta\n"]
@@ -1135,14 +1175,18 @@ async def cb_sched(c: CallbackQuery):
     if len(items) > 30:
         lines.append(f"… va yana {len(items) - 30} ta")
     rows = [[(f"❌ {CAT.get(code)['title'][:22]} · {fmt(num)}", f"scx:{code}:{fmt(num)}")] for _ts, code, num, _x in items[:10]]
-    await bot.send_message(c.from_user.id, "\n".join(lines), reply_markup=kb(rows))
+    await bot.send_message(uid, "\n".join(lines), reply_markup=kb(rows))
 
 
 # ---------------------------------------------------------------- mangalarni boshqarish
 
 @router.callback_query(F.data.startswith("adm:list:"), adm)
 async def cb_list(c: CallbackQuery):
-    page = int(c.data.split(":")[2])
+    await c.answer()
+    await send_manga_list(c.from_user.id, int(c.data.split(":")[2]))
+
+
+async def send_manga_list(uid, page):
     items = CAT.manga_list(hidden=True)
     per = 10
     part = items[page * per:(page + 1) * per]
@@ -1155,8 +1199,8 @@ async def cb_list(c: CallbackQuery):
     if nav:
         rows.append(nav)
     rows.append([("➕ Manga qo‘shish", "adm:add")])
-    await c.answer()
-    await bot.send_message(c.from_user.id, f"📚 <b>Mangalar</b> — {len(items)} ta", reply_markup=kb(rows))
+    await bot.send_message(uid, f"📚 <b>Mangalar</b> — {len(items)} ta" + ("" if items else "\nHozircha manga yo‘q."),
+                           reply_markup=kb(rows))
 
 
 def manga_admin(code):

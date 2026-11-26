@@ -10,9 +10,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, ChatMemberUpdated, KeyboardButton, Message, ReplyKeyboardMarkup
 
 import catalog
-from core import (CAT, REQUIRED_CHANNEL, SUB_OK, STATE, bot, esc, jlog, kb, log, safe_edit, storage_chat,
-                  tell_owners)
-from reader import MENU
+from core import (CAT, REQUIRED_CHANNEL, SUB_OK, STATE, admin_keyboard, bot, esc, jlog, kb, log, safe_edit,
+                  storage_chat, tell_owners)
 
 router = Router(name="staff")
 DEFAULT_RIGHTS = ("manga", "chapter")
@@ -92,7 +91,6 @@ def admins_view():
                      "bob yuklash.")
     rows = [[(f"👤 {(a.get('name') or str(aid))[:30]}", f"adm:a:{aid}")] for aid, a in items[:30]]
     rows.append([("➕ Admin qo‘shish", "adm:aadd")])
-    rows.append([("⬅️ Panel", "adm:menu")])
     return "\n".join(lines), kb(rows)
 
 
@@ -117,8 +115,12 @@ async def cb_admins(c: CallbackQuery, state: FSMContext):
         return
     await state.clear()
     await c.answer()
+    await send_admins(c.from_user.id)
+
+
+async def send_admins(uid):
     text, markup = admins_view()
-    await bot.send_message(c.from_user.id, text, reply_markup=markup)
+    await bot.send_message(uid, text, reply_markup=markup)
 
 
 @router.callback_query(F.data == "adm:aadd", adm)
@@ -138,7 +140,7 @@ async def cb_aadd(c: CallbackQuery, state: FSMContext):
 async def _cancel_to_menu(msg: Message, state: FSMContext):
     await state.clear()
     PENDING_SUB.pop(msg.from_user.id, None)
-    await msg.answer("❌ Bekor qilindi.", reply_markup=MENU)
+    await msg.answer("❌ Bekor qilindi.", reply_markup=admin_keyboard(msg.from_user.id))
 
 
 @router.message(AddAdmin.uid, F.users_shared)
@@ -183,7 +185,8 @@ async def aa_text(msg: Message, state: FSMContext):
 async def finish_add(msg: Message, state: FSMContext, uid: int, name: str = "", username: str = ""):
     if uid in CAT.owners:
         await state.clear()
-        await msg.answer("👑 Bu bosh admin — uning huquqlari cheklanmaydi.", reply_markup=MENU)
+        await msg.answer("👑 Bu bosh admin — uning huquqlari cheklanmaydi.",
+                         reply_markup=admin_keyboard(msg.from_user.id))
         return
     if uid == getattr(bot, "id", None):
         await msg.answer("🤖 Bu botning o‘zi 🙂 Boshqa odamni tanlang.")
@@ -196,7 +199,8 @@ async def finish_add(msg: Message, state: FSMContext, uid: int, name: str = "", 
         except Exception:
             pass
     if uid in CAT.admins:
-        await msg.answer("ℹ️ U allaqachon admin — huquqlarini quyida o‘zgartirishingiz mumkin.", reply_markup=MENU)
+        await msg.answer("ℹ️ U allaqachon admin — huquqlarini quyida o‘zgartirishingiz mumkin.",
+                         reply_markup=admin_keyboard(msg.from_user.id))
     else:
         await CAT.set_admin(uid, DEFAULT_RIGHTS, name=name, by=msg.from_user.id, username=username)
         await jlog(msg, f"👥 Yangi admin: {name or uid} (ID {uid})")
@@ -206,7 +210,8 @@ async def finish_add(msg: Message, state: FSMContext, uid: int, name: str = "", 
                                         "Boshqaruv paneli: /admin")
         except Exception:
             note = ("\n\nℹ️ U hali botni ochmagan — xabar bormadi. Botga kirib /admin yozsa, panel chiqadi.")
-        await msg.answer(f"✅ {esc(name or str(uid))} admin qilindi.{note}", reply_markup=MENU)
+        await msg.answer(f"✅ {esc(name or str(uid))} admin qilindi.{note}",
+                         reply_markup=admin_keyboard(msg.from_user.id))
     text, markup = admin_editor(uid)
     await msg.answer(text, reply_markup=markup)
 
@@ -292,7 +297,12 @@ async def cb_journal(c: CallbackQuery):
     if not (owner(c) or can(c, "settings")):
         await deny(c)
         return
-    page = int(c.data.split(":")[2])
+    await c.answer()
+    msg = c.message if c.message is not None and (getattr(c.message, "text", "") or "").startswith("📜") else None
+    await send_journal(c.from_user.id, int(c.data.split(":")[2]), msg)
+
+
+async def send_journal(uid, page, edit=None):
     items = list(reversed(CAT.journal))
     per = 15
     part = items[page * per:(page + 1) * per]
@@ -310,12 +320,10 @@ async def cb_journal(c: CallbackQuery):
     if (page + 1) * per < len(items):
         nav.append(("Eskilari ➡️", f"adm:journal:{page + 1}"))
     rows = [nav] if nav else []
-    rows.append([("⬅️ Panel", "adm:menu")])
-    await c.answer()
-    if c.message is not None and (getattr(c.message, "text", "") or "").startswith("📜"):
-        await safe_edit(c.message, text, kb(rows))
+    if edit is not None:
+        await safe_edit(edit, text, kb(rows) if rows else None)
     else:
-        await bot.send_message(c.from_user.id, text, reply_markup=kb(rows))
+        await bot.send_message(uid, text, reply_markup=kb(rows) if rows else None)
 
 
 # ---------------------------------------------------------------- majburiy obuna
@@ -334,7 +342,6 @@ def subs_view():
     rows = [[(f"🗑 {i}. {(ch.get('title') or str(ch.get('id')))[:30]}", f"adm:subdel:{ch.get('id')}")]
             for i, ch in enumerate(chs, 1)]
     rows.append([("➕ Kanal qo‘shish", "adm:subadd")])
-    rows.append([("⬅️ Panel", "adm:menu")])
     return "\n".join(lines), kb(rows)
 
 
@@ -345,8 +352,12 @@ async def cb_subs(c: CallbackQuery, state: FSMContext):
         return
     await state.clear()
     await c.answer()
+    await send_subs(c.from_user.id)
+
+
+async def send_subs(uid):
     text, markup = subs_view()
-    await bot.send_message(c.from_user.id, text, reply_markup=markup)
+    await bot.send_message(uid, text, reply_markup=markup)
 
 
 @router.callback_query(F.data == "adm:subadd", adm)
@@ -405,7 +416,7 @@ async def do_add_sub(msg: Message, state: FSMContext, ref):
         return
     await state.clear()
     PENDING_SUB.pop(msg.from_user.id, None)
-    await msg.answer(text, reply_markup=MENU)
+    await msg.answer(text, reply_markup=admin_keyboard(msg.from_user.id))
     view, markup = subs_view()
     await msg.answer(view, reply_markup=markup)
 
