@@ -102,8 +102,9 @@ def kb(rows) -> InlineKeyboardMarkup:
 # ---------------------------------------------------------------- admin paneli: pastki (oddiy) tugmalar
 A_ADD, A_LIST, A_CHAP, A_SCHED = "➕ Manga qo‘shish", "📚 Mangalar", "📤 Bob qo‘shish", "⏰ Rejadagilar"
 A_STAT, A_JOURNAL, A_ADMINS, A_SUBS = "📊 Statistika", "📜 Jurnal", "👥 Adminlar", "📢 Majburiy obuna"
+A_SRC, A_PROMO = "🔗 Manbalar", "📣 Reklama kanali"
 A_EXIT = "🚪 Paneldan chiqish"
-ADMIN_BUTTONS = (A_ADD, A_LIST, A_CHAP, A_SCHED, A_STAT, A_JOURNAL, A_ADMINS, A_SUBS, A_EXIT)
+ADMIN_BUTTONS = (A_ADD, A_LIST, A_CHAP, A_SCHED, A_SRC, A_PROMO, A_STAT, A_JOURNAL, A_ADMINS, A_SUBS, A_EXIT)
 
 
 def admin_keyboard(uid) -> ReplyKeyboardMarkup:
@@ -113,6 +114,13 @@ def admin_keyboard(uid) -> ReplyKeyboardMarkup:
         rows.append([A_ADD, A_LIST])
     if CAT.has(uid, "chapter"):
         rows.append([A_CHAP, A_SCHED])
+    r = []
+    if CAT.has(uid, "chapter"):
+        r.append(A_SRC)
+    if CAT.has(uid, "settings"):
+        r.append(A_PROMO)
+    if r:
+        rows.append(r)
     r = []
     if CAT.has(uid, "stats"):
         r.append(A_STAT)

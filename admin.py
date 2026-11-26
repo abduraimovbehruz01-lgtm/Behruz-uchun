@@ -17,11 +17,13 @@ import catalog
 import chapters as chapfiles
 import translator
 import typeset
-from core import (A_ADD, A_ADMINS, A_CHAP, A_EXIT, A_JOURNAL, A_LIST, A_SCHED, A_STAT, A_SUBS, ADMIN_BUTTONS, CAT, GEM,
+import promo
+from core import (A_ADD, A_ADMINS, A_CHAP, A_EXIT, A_JOURNAL, A_LIST, A_PROMO, A_SCHED, A_SRC, A_STAT, A_SUBS,
+                  ADMIN_BUTTONS, CAT, GEM,
                   MAX_DOWNLOAD, MAX_PAGES, STATE, LinkError, admin_keyboard, bot, channels, download, download_to, esc,
                   fetch_url, find_url, gem_error_text, jlog, kb, log, no_keyboard, safe_delete, safe_edit,
                   storage_chat, storage_pieces, tell_owners, translate_image, upload_photos, user_tmp)
-from reader import notify_followers, send_home, show_card
+from reader import send_home, show_card
 
 router = Router(name="admin")
 fmt = catalog.fmt_num
@@ -93,6 +95,12 @@ def menu_text(uid=None):
         lines.append(f"⏰ Rejada: {len(sch)} ta bob (eng yaqini {catalog.when_text(sch[0][0])})")
     chs = channels()
     lines.append(f"📢 Majburiy obuna: {len(chs)} ta kanal" if chs else "📢 Majburiy obuna: yo‘q")
+    srcs = [x for x in CAT.cfg.get("sources") or [] if isinstance(x, dict)]
+    if srcs:
+        lines.append(f"🔗 Hamkor manbalar: {len(srcs)} ta")
+    pr = CAT.cfg.get("promo") or {}
+    lines.append(f"📣 Reklama kanali: «{esc(pr.get('title') or 'kanal')}»" + ("" if pr.get("on", True) else " (to‘xtatilgan)")
+                 if pr.get("id") else "📣 Reklama kanali: ulanmagan")
     if uid is not None and not CAT.rights(uid):
         lines.append("\n⚠️ Sizga hali birorta huquq berilmagan — bosh admin bilan bog‘laning.")
     elif uid is None or CAT.has(uid, "chapter"):
@@ -130,7 +138,7 @@ async def on_admin_button(msg: Message, state: FSMContext):
     COLLECT.pop(uid, None)
     PENDING.pop(uid, None)
     need = {A_ADD: "manga", A_LIST: "manga", A_CHAP: "chapter", A_SCHED: "chapter", A_STAT: "stats",
-            A_SUBS: "settings"}.get(t)
+            A_SUBS: "settings", A_SRC: "chapter", A_PROMO: "settings"}.get(t)
     if (need and not CAT.has(uid, need)) or (t == A_ADMINS and not CAT.is_owner(uid)) or \
             (t == A_JOURNAL and not (CAT.is_owner(uid) or CAT.has(uid, "settings"))):
         await msg.answer("Bu huquq sizda yo‘q.", reply_markup=admin_keyboard(uid))
@@ -156,6 +164,11 @@ async def on_admin_button(msg: Message, state: FSMContext):
         await staff.send_admins(uid)
     elif t == A_SUBS:
         await staff.send_subs(uid)
+    elif t == A_PROMO:
+        await staff.send_promo(uid)
+    elif t == A_SRC:
+        import autosrc
+        await autosrc.send_sources(uid)
 
 
 @router.message(Command("bekor"))
@@ -920,9 +933,13 @@ async def cb_pub(c: CallbackQuery):
         return
     fol = len(m.get("followers", []))
     await safe_edit(c.message, text + (f"\n🔔 {fol} ta kuzatuvchiga xabar yuborilmoqda…" if fol else ""))
-    if fol:
-        sent = await notify_followers(code, [num])
-        await safe_edit(c.message, text + f"\n🔔 {sent} ta kuzatuvchiga xabar yuborildi.")
+    sent, posted = await promo.announce(code, [num])
+    await safe_edit(c.message, text + announce_note(fol, sent, posted))
+
+
+def announce_note(fol, sent, posted) -> str:
+    out = f"\n🔔 {sent} ta kuzatuvchiga xabar yuborildi." if fol else ""
+    return out + ("\n📣 Reklama kanaliga post chiqdi." if posted else "")
 
 
 def bulk_items(code, free_k, price):
@@ -1010,9 +1027,9 @@ async def cb_bpn(c: CallbackQuery):
     text = f"✅ <b>{esc(m['title'])}</b>: {len(newly)} ta bob chop etildi.\n{bulk_summary(items)}"
     fol = len(m.get("followers", []))
     await safe_edit(c.message, text)
-    if newly and fol:
-        sent = await notify_followers(code, newly)
-        await safe_edit(c.message, text + f"\n🔔 {sent} ta kuzatuvchiga xabar yuborildi.")
+    if newly:
+        sent, posted = await promo.announce(code, newly)
+        await safe_edit(c.message, text + announce_note(fol, sent, posted))
 
 
 @router.callback_query(F.data.startswith("bpd:"), adm)
@@ -1215,11 +1232,12 @@ def manga_admin(code):
             f"🏷 {esc(', '.join(m.get('genres', [])) or '—')}\n"
             f"📌 {esc(catalog.status_text(m) or '—')}" + (f" · 📅 {days}" if days else "") + "\n"
             f"📖 Glossariy: {len(CAT.glossary(code))} ta so‘z"
+            + (f" · ✍️ {esc(m['credit'])}" if m.get("credit") else "")
             + ("\n🙈 Yashirilgan (katalogda ko‘rinmaydi)" if m.get("hidden") else ""))
     rows = [[("✏️ Nomi", f"ae:{code}:title"), ("📝 Tavsif", f"ae:{code}:desc")],
             [("🏷 Janrlar", f"ae:{code}:genres"), ("🖼 Muqova", f"ae:{code}:cover")],
             [("📌 Holati", f"ast:{code}"), ("📅 Chiqish kunlari", f"ard:{code}")],
-            [("📖 Glossariy", f"ag:{code}")],
+            [("📖 Glossariy", f"ag:{code}"), ("✍️ Tarjimon", f"ae:{code}:credit")],
             [("📤 Bob qo‘shish", f"ach:{code}"), ("📑 Boblar", f"acl:{code}:0")]]
     if drafts:
         rows.append([(f"📢 Qoralamalarni chop etish ({len(drafts)})", f"bp:{code}")])
@@ -1241,8 +1259,10 @@ async def cb_am(c: CallbackQuery, state: FSMContext):
 
 
 FIELD_PROMPT = {"title": "✏️ Yangi nomini yuboring:", "desc": "📝 Yangi tavsifni yuboring:",
-                "genres": "🏷 Janrlarni vergul bilan yuboring:", "cover": "🖼 Yangi muqova rasmini yuboring:"}
-FIELD_NAME = {"title": "nomi", "desc": "tavsifi", "genres": "janrlari", "cover": "muqovasi"}
+                "genres": "🏷 Janrlarni vergul bilan yuboring:", "cover": "🖼 Yangi muqova rasmini yuboring:",
+                "credit": "✍️ Tarjimon yoki jamoa yozuvini yuboring (masalan: <i>Tarjima: Nur Team</i>).\n"
+                          "U manga kartasida, bob boshida va reklama postida chiqadi. Olib tashlash uchun «-» yuboring."}
+FIELD_NAME = {"title": "nomi", "desc": "tavsifi", "genres": "janrlari", "cover": "muqovasi", "credit": "tarjimon yozuvi"}
 
 
 @router.callback_query(F.data.startswith("ae:"), adm)
@@ -1274,6 +1294,8 @@ async def ef_value(msg: Message, state: FSMContext):
         return
     elif field == "genres":
         val = [g.strip().capitalize() for g in msg.text.replace(";", ",").split(",") if g.strip()][:8]
+    elif field == "credit":
+        val = "" if msg.text.strip() in ("-", "—") else msg.text.strip()[:100]
     else:
         val = msg.text.strip()[:2000 if field == "desc" else 150]
     await state.clear()

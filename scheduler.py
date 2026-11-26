@@ -7,8 +7,8 @@ import asyncio
 import time
 
 import catalog
+import promo
 from core import CAT, bot, esc, jlog, log
-from reader import notify_followers
 
 CHECK_EVERY = 20
 LOCK = asyncio.Lock()
@@ -44,11 +44,12 @@ async def run_due(now=None) -> int:
                 continue
             total += len(newly)
             await jlog(0, f"⏰ {m['title']} — {catalog.ranges(newly)}-bob avtomatik chop etildi")
-            sent = await notify_followers(code, newly)
+            sent, posted = await promo.announce(code, newly)
             for uid in by:
                 try:
                     await bot.send_message(uid, f"⏰ <b>{esc(m['title'])}</b> — {catalog.ranges(newly)}-bob vaqtida chop "
-                                                f"etildi. 🔔 {sent} ta kuzatuvchiga xabar ketdi.")
+                                                f"etildi. 🔔 {sent} ta kuzatuvchiga xabar ketdi."
+                                                + (" 📣 Reklama kanaliga post chiqdi." if posted else ""))
                 except Exception:
                     pass
         return total
@@ -63,6 +64,11 @@ async def loop():
                 log.info("rejadagi boblar chop etildi: %d", n)
         except Exception:
             log.exception("rejalashtiruvchida xato")
+        try:
+            import autosrc
+            await autosrc.tick()          # hamkor kanallardan kelgan albomlarni yopish va navbatni ishga tushirish
+        except Exception:
+            log.exception("avto-manbalar")
         await asyncio.sleep(CHECK_EVERY)
 
 

@@ -24,6 +24,7 @@ class Observer:
 class Router:
     def __init__(self, name=None):
         self.message = Observer(); self.callback_query = Observer(); self.my_chat_member = Observer()
+        self.channel_post = Observer()
 class Dispatcher(Router):
     def __init__(self): super().__init__(); self.startup = Observer(); self.shutdown = Observer()
     def include_router(self, r): pass

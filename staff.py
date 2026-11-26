@@ -16,6 +16,7 @@ from core import (CAT, REQUIRED_CHANNEL, SUB_OK, STATE, admin_keyboard, bot, esc
 router = Router(name="staff")
 DEFAULT_RIGHTS = ("manga", "chapter")
 PENDING_SUB: dict[int, float] = {}     # admin kanal tanlash oynasini ochgan vaqt (ikki marta so'ramaslik uchun)
+PARTNER_NOTE: dict[int, float] = {}    # hamkor botni kanaliga qo'shgani haqida oxirgi xabar vaqti
 B_CANCEL = "❌ Bekor qilish"
 
 
@@ -43,6 +44,10 @@ class SubAdd(StatesGroup):
     wait = State()
 
 
+class PromoSet(StatesGroup):
+    wait = State()
+
+
 def users_keyboard():
     """«Kontaktdan tanlash» tugmasi: Telegram foydalanuvchi tanlash oynasini ochadi va ID ni yuboradi."""
     from aiogram.types import KeyboardButtonRequestUsers
@@ -55,22 +60,25 @@ def users_keyboard():
                                          [KeyboardButton(text=B_CANCEL)]], resize_keyboard=True, one_time_keyboard=True)
 
 
-def chat_keyboard():
-    """«Kanalni tanlash» tugmasi: kanal tanlansa, Telegram botni o'sha kanalga admin qilib qo'shadi."""
+def chat_keyboard(post=False):
+    """«Kanalni tanlash» tugmasi: kanal tanlansa, Telegram botni o'sha kanalga admin qilib qo'shadi.
+    post=True — botga post yozish huquqi ham so'raladi (reklama kanali uchun)."""
     from aiogram.types import KeyboardButtonRequestChat
-    req = None
+    req, rid = None, (3 if post else 2)
     try:
         from aiogram.types import ChatAdministratorRights
+        extra = {"can_post_messages": True} if post else {}
         rights = ChatAdministratorRights(is_anonymous=False, can_manage_chat=False, can_delete_messages=False,
                                          can_manage_video_chats=False, can_restrict_members=False,
-                                         can_promote_members=False, can_change_info=False, can_invite_users=True,
-                                         can_post_stories=False, can_edit_stories=False, can_delete_stories=False)
-        req = KeyboardButtonRequestChat(request_id=2, chat_is_channel=True, user_administrator_rights=rights,
+                                         can_promote_members=False, can_change_info=False, can_invite_users=not post,
+                                         can_post_stories=False, can_edit_stories=False, can_delete_stories=False,
+                                         **extra)
+        req = KeyboardButtonRequestChat(request_id=rid, chat_is_channel=True, user_administrator_rights=rights,
                                         bot_administrator_rights=rights, request_title=True, request_username=True)
     except Exception as e:
         log.debug("kanal tanlash tugmasi (huquqlarsiz): %r", e)
     if req is None:
-        req = KeyboardButtonRequestChat(request_id=2, chat_is_channel=True, request_title=True, request_username=True)
+        req = KeyboardButtonRequestChat(request_id=rid, chat_is_channel=True, request_title=True, request_username=True)
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📢 Kanalni tanlash", request_chat=req)],
                                          [KeyboardButton(text=B_CANCEL)]], resize_keyboard=True, one_time_keyboard=True)
 
@@ -326,6 +334,141 @@ async def send_journal(uid, page, edit=None):
         await bot.send_message(uid, text, reply_markup=kb(rows) if rows else None)
 
 
+# ---------------------------------------------------------------- reklama kanali
+
+def promo_view():
+    p = CAT.cfg.get("promo") or {}
+    lines = ["📣 <b>Reklama kanali</b>", ""]
+    if p.get("id"):
+        lines.append(f"Kanal: «{esc(p.get('title') or str(p['id']))}» — " + ("✅ yoqilgan" if p.get("on", True)
+                                                                          else "⏸ to‘xtatilgan"))
+        lines.append("\nYangi bob chiqqanda shu kanalga muqova, bob raqami, manga kodi va «📖 O‘qish» tugmasi bilan "
+                     "post o‘zi chiqadi (qo‘lda, rejali va hamkor manbadan chop etilganda ham).")
+        rows = [[("⏸ To‘xtatish" if p.get("on", True) else "▶️ Yoqish", "adm:prtog"), ("🧪 Sinov posti", "adm:prtest")],
+                [("🔄 Boshqa kanal", "adm:prset"), ("🗑 Uzish", "adm:prdel")]]
+    else:
+        lines.append("Hozircha ulanmagan.\n\nUlasangiz, har yangi bob chiqqanda o‘sha kanalga muqova, bob raqami va "
+                     "«📖 O‘qish» tugmasi bilan post avtomatik chiqadi.")
+        rows = [[("➕ Kanalni ulash", "adm:prset")]]
+    return "\n".join(lines), kb(rows)
+
+
+async def send_promo(uid):
+    text, markup = promo_view()
+    await bot.send_message(uid, text, reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("adm:pr"), adm)
+async def cb_promo(c: CallbackQuery, state: FSMContext):
+    if not can(c, "settings"):
+        await deny(c)
+        return
+    act = c.data[6:]
+    p = dict(CAT.cfg.get("promo") or {})
+    if act == "set":
+        await state.set_state(PromoSet.wait)
+        PENDING_SUB[c.from_user.id] = time.time()
+        await c.answer()
+        await bot.send_message(c.from_user.id, "📣 <b>Reklama kanalini ulash</b>\n\n"
+                                               "• pastdagi «📢 Kanalni tanlash» tugmasini bosing — bot o‘sha kanalga post "
+                                               "yozish huquqi bilan qo‘shiladi;\n"
+                                               "• yoki kanal manzilini yuboring (<code>@kanal</code>);\n"
+                                               "• yoki kanaldan biror postni forward qiling.", reply_markup=chat_keyboard(True))
+        return
+    if not p.get("id"):
+        await c.answer("Reklama kanali ulanmagan", show_alert=True)
+        return
+    if act == "tog":
+        p["on"] = not p.get("on", True)
+        await CAT.set_cfg(promo=p)
+        await jlog(c, f"📣 Reklama kanali {'yoqildi' if p['on'] else 'to‘xtatildi'}: {p.get('title')}")
+        await c.answer("▶️ Yoqildi" if p["on"] else "⏸ To‘xtatildi")
+    elif act == "del":
+        await CAT.set_cfg(promo={})
+        await jlog(c, f"📣 Reklama kanali uzildi: {p.get('title')}")
+        await c.answer("Uzildi")
+    elif act == "test":
+        import promo
+        latest = None
+        for m in CAT.manga_list():
+            chs = CAT.chapter_list(m["code"])
+            if chs:
+                latest = (m["code"], chs[-1]["num"])
+                break
+        if not latest:
+            await c.answer("Hali chop etilgan bob yo‘q — sinov uchun avval bitta bob chop eting.", show_alert=True)
+            return
+        ok = await promo.channel_post(latest[0], [latest[1]], force=True)
+        await c.answer("✅ Sinov posti kanalga chiqdi" if ok else "❌ Post chiqmadi — botda post yozish huquqi bormi?",
+                       show_alert=not ok)
+        return
+    text, markup = promo_view()
+    await safe_edit(c.message, text, markup)
+
+
+@router.message(PromoSet.wait, F.chat_shared)
+async def pr_shared(msg: Message, state: FSMContext):
+    await do_set_promo(msg, state, msg.chat_shared.chat_id)
+
+
+@router.message(PromoSet.wait, F.forward_origin)
+async def pr_forward(msg: Message, state: FSMContext):
+    chat = getattr(msg.forward_origin, "chat", None) or getattr(msg.forward_origin, "sender_chat", None)
+    if chat is None:
+        await msg.answer("Bu kanaldan forward qilingan post emas.")
+        return
+    await do_set_promo(msg, state, chat.id)
+
+
+@router.message(PromoSet.wait, F.text, ~F.text.startswith("/"))
+async def pr_text(msg: Message, state: FSMContext):
+    t = msg.text.strip()
+    if t == B_CANCEL:
+        await _cancel_to_menu(msg, state)
+        return
+    m = re.search(r"(?:t\.me/|telegram\.me/|@)([A-Za-z][A-Za-z0-9_]{3,})", t)
+    if not m:
+        await msg.answer("Kanal manzilini <code>@kanal</code> ko‘rinishida yuboring yoki «📢 Kanalni tanlash» tugmasini bosing.")
+        return
+    await do_set_promo(msg, state, "@" + m.group(1))
+
+
+async def do_set_promo(msg: Message, state: FSMContext, ref):
+    ok, text = await set_promo_channel(msg, ref)
+    if not ok:
+        await msg.answer(text)
+        return
+    await state.clear()
+    PENDING_SUB.pop(msg.from_user.id, None)
+    await msg.answer(text, reply_markup=admin_keyboard(msg.from_user.id))
+    view, markup = promo_view()
+    await msg.answer(view, reply_markup=markup)
+
+
+async def set_promo_channel(event, ref):
+    try:
+        chat = await bot.get_chat(ref)
+    except Exception:
+        return False, "🤷 Kanal topilmadi. Manzilni tekshiring yoki botni avval kanalga admin qiling."
+    if str(getattr(chat.type, "value", chat.type)) != "channel":
+        return False, "Bu kanal emas."
+    st = storage_chat()
+    if st is not None and str(st) == str(chat.id):
+        return False, "📦 Bu rasmlar ombori — reklama uchun boshqa (ochiq) kanal tanlang."
+    try:
+        me = await bot.get_chat_member(chat.id, bot.id)
+        status = str(getattr(me.status, "value", me.status))
+        can_post = status == "creator" or (status == "administrator" and getattr(me, "can_post_messages", True) is not False)
+    except Exception:
+        can_post = False
+    if not can_post:
+        return False, (f"⚠️ Bot «{esc(chat.title or '')}» kanalida post yoza olmaydi. Botni kanalga <b>admin</b> qiling va "
+                       "«Xabar joylash» huquqini bering, keyin qayta urinib ko‘ring.")
+    await CAT.set_cfg(promo={"id": chat.id, "title": chat.title or "", "on": True})
+    await jlog(event, f"📣 Reklama kanali: {chat.title or chat.id}")
+    return True, f"✅ «{esc(chat.title or '')}» reklama kanali qilindi. Yangi boblar shu yerga ham chiqadi."
+
+
 # ---------------------------------------------------------------- majburiy obuna
 
 def subs_view():
@@ -500,10 +643,13 @@ async def on_member(ev: ChatMemberUpdated):
     st = str(getattr(ev.new_chat_member.status, "value", ev.new_chat_member.status))
     by = ev.from_user.id if ev.from_user else 0
     if st in ("administrator", "creator"):
-        if not CAT.is_admin(by) or ctype != "channel":
+        if ctype != "channel":
+            return
+        if not CAT.is_admin(by):
+            await partner_added(chat, ev.from_user)
             return
         if time.time() - PENDING_SUB.get(by, 0) < 900:
-            return   # admin hozir majburiy obuna kanalini tanlayapti — o'sha yerda qo'shiladi
+            return   # admin hozir kanal tanlayapti (majburiy obuna yoki reklama) — o'sha yerda ulanadi
         cur = storage_chat()
         if cur is not None and str(cur) == str(chat.id):
             return
@@ -513,7 +659,9 @@ async def on_member(ev: ChatMemberUpdated):
             return
         try:
             await bot.send_message(by, f"🤖 Bot «{esc(chat.title or 'kanal')}» kanaliga admin qilindi. Bu kanal nima uchun?",
-                                   reply_markup=kb([[("📢 Majburiy obunaga qo‘shish", f"chan:sub:{chat.id}")],
+                                   reply_markup=kb([[("📣 Reklama kanali qilish", f"chan:promo:{chat.id}")],
+                                                    [("📢 Majburiy obunaga qo‘shish", f"chan:sub:{chat.id}")],
+                                                    [("🔗 Hamkor manba (boblar shu yerdan olinadi)", f"src:new:{chat.id}")],
                                                     [("📦 Rasmlar ombori qilish", f"chan:st:{chat.id}")],
                                                     [("🚫 Hech narsa", "chan:no")]]))
         except Exception:
@@ -530,6 +678,32 @@ async def on_member(ev: ChatMemberUpdated):
             SUB_OK.clear()
             await tell_owners(f"⚠️ Bot «{esc(chat.title or 'kanal')}» kanalidan chiqarildi — u majburiy obuna "
                               "ro‘yxatidan olib tashlandi.", force=True)
+        pr = CAT.cfg.get("promo") or {}
+        if str(pr.get("id")) == str(chat.id):
+            await CAT.set_cfg(promo={})
+            await tell_owners(f"⚠️ Bot «{esc(chat.title or 'kanal')}» reklama kanalidan chiqarildi — postlar to‘xtadi.",
+                              force=True)
+        if any(str(x.get("chat")) == str(chat.id) for x in CAT.cfg.get("sources") or [] if isinstance(x, dict)):
+            await tell_owners(f"⚠️ Bot «{esc(chat.title or 'kanal')}» hamkor kanalidan chiqarildi — bu manbadan boblar "
+                              "endi kelmaydi.", force=True)
+
+
+async def partner_added(chat, user):
+    """Boshqa odam (hamkor) botni o'z kanaliga admin qildi — bosh adminlarga manba qilib ulashni taklif qilamiz."""
+    if time.time() - PARTNER_NOTE.get(chat.id, 0) < 3600:
+        return
+    PARTNER_NOTE[chat.id] = time.time()
+    who = "Kimdir"
+    if user is not None:
+        who = esc(user.first_name or "") + (f" (@{esc(user.username)})" if getattr(user, "username", None) else "")
+    text = (f"🤝 {who} botni o‘zining «{esc(chat.title or 'kanal')}» kanaliga admin qildi.\n\n"
+            "Bu ruxsat bergan hamkor kanal bo‘lsa — manba qilib ulang: u yerga tashlangan boblar botga avtomatik olinadi.")
+    for oid in CAT.owners:
+        try:
+            await bot.send_message(oid, text, reply_markup=kb([[("🔗 Manba qilib ulash", f"src:new:{chat.id}")],
+                                                               [("🚫 Kerak emas", "chan:no")]]))
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data.startswith("chan:"), adm)
@@ -545,6 +719,11 @@ async def cb_chan(c: CallbackQuery):
     cid = int(parts[2])
     if parts[1] == "sub":
         ok, text = await add_sub_channel(c, cid)
+        await c.answer()
+        await safe_edit(c.message, text)
+        return
+    if parts[1] == "promo":
+        ok, text = await set_promo_channel(c, cid)
         await c.answer()
         await safe_edit(c.message, text)
         return

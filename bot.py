@@ -6,6 +6,8 @@ Qismlar:
   staff.py     — adminlar va huquqlar, jurnal, majburiy obuna, ombor kanali
   editor.py    — bob sahifalarini tahrirlash, bob nomi, glossariy
   scheduler.py — rejalashtirilgan boblarni vaqtida chop etish
+  autosrc.py   — hamkor kanallar: u yerga tashlangan boblarni avtomatik olish, tarjima qilish va chop etish
+  promo.py     — yangi bob e'loni: kuzatuvchilarga xabar va reklama kanaliga post
   tools.py     — adminlar uchun tezkor tarjima (sahifa/fayl yuborsa — tarjima qilib qaytaradi)
   core.py      — umumiy sozlamalar; catalog.py — katalog mantiqi; store.py — Firebase/xotira
   translator.py, typeset.py, chapters.py — tarjima, rasmga yozish, PDF/ZIP
@@ -26,6 +28,7 @@ from aiogram import Dispatcher, F
 from aiogram.types import BotCommand
 
 import admin
+import autosrc
 import editor
 import reader
 import scheduler
@@ -36,7 +39,7 @@ import translator
 from core import CAT, GEM, PORT, PUBLIC_URL, STATE, TEST_KEY, TOKEN, bot, http, log, tell_owners, translate_image
 
 dp = Dispatcher()
-for r in (admin.router, staff.router, editor.router, tools.router, reader.router):
+for r in (admin.router, staff.router, editor.router, autosrc.router, tools.router, reader.router):
     r.message.filter(F.chat.type == "private")
     dp.include_router(r)
 
@@ -65,7 +68,7 @@ async def sinov(req: web.Request):
 
 def busy() -> bool:
     return bool(tools.QUEUES or tools.CURRENT or admin.JOBS or admin.DOWNLOADING or reader.READING
-                or scheduler.soon())
+                or scheduler.soon() or autosrc.busy())
 
 
 async def keepalive():
@@ -85,6 +88,9 @@ async def on_startup():
     try:
         await CAT.load()
         log.info("Katalog yuklandi: %d manga, %d admin", len(CAT.manga), len(CAT.admins))
+        await autosrc.load()
+        if autosrc.QUEUE or autosrc.ALBUMS:
+            log.info("Hamkor manbalar navbati: %d bob, %d albom", len(autosrc.QUEUE), len(autosrc.ALBUMS))
     except Exception as e:
         log.exception("Katalogni yuklab bo‘lmadi")
         await tell_owners(f"⚠️ Bazadan katalogni yuklab bo‘lmadi: <code>{str(e)[:300]}</code>", force=True)

@@ -96,6 +96,8 @@ def card_text(m, u):
     st, days = catalog.status_text(m), catalog.days_text(m.get("days"))
     if st or days:
         lines.append(" · ".join(x for x in (st, f"📅 {days}" if days else "") if x))
+    if m.get("credit"):
+        lines.append(f"✍️ {esc(m['credit'])}")
     head = "\n".join(lines)
     desc = (m.get("desc") or "").strip()
     room = 1000 - len(head)
@@ -323,8 +325,9 @@ async def read_chapter(chat_id, uid, code, num, as_pdf=False):
             await send_pdf(chat_id, m, chap, data, protect)
         else:
             title = f" — {esc(chap['title'])}" if chap.get("title") else ""
+            credit = (chap.get("credit") or m.get("credit") or "").strip()
             await bot.send_message(chat_id, f"📖 <b>{esc(m['title'])}</b> · {fmt(num)}-bob{title}\n"
-                                            f"📄 {len(pages)} sahifa")
+                                            f"📄 {len(pages)} sahifa" + (f" · ✍️ {esc(credit)}" if credit else ""))
             for i in range(0, len(pages), 10):
                 part = pages[i:i + 10]
                 if len(part) == 1:

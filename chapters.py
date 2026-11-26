@@ -157,17 +157,21 @@ def _strip_ext(name: str) -> str:
 _NUM = r"(\d{1,5}(?:[.,]\d{1,2})?)"
 
 
-def guess_num(label: str):
-    """Papka yoki fayl nomidan bob raqamini topadi: 'Chapter 12', 'Ch.012', '12-bob', '第12話', '012 - Nomi'."""
-    s = _strip_ext((label or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1])
+def guess_num(label: str, strict: bool = False):
+    """Papka yoki fayl nomidan bob raqamini topadi: 'Chapter 12', 'Ch.012', '12-bob', '第12話', '012 - Nomi'.
+    strict=True — faqat «bob/chapter/qism…» so'zi yonidagi raqam (oddiy matn ichidagi tasodifiy raqam emas)."""
+    s = _strip_ext((label or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] if not strict else (label or ""))
     s = re.sub(r"[\[\(\{][^\]\)\}]*[\]\)\}]", " ", s)                       # [Guruh], (2023), {1080p}
     s = re.sub(r"(?i)(?<![a-z])(?:vol(?:ume)?|v|tom|том|season|s)[\s._-]*\d+", " ", s)
-    for p in (r"(?i)(?:chapter|chap|ch|bob|qism|глава|гл|episode|ep|эпизод|часть|#)[\s._:#-]*" + _NUM,
+    words = r"chapter|chap|ch|bob|qism|глава|гл|episode|ep|эпизод|часть" + ("" if strict else "|#")
+    for p in (r"(?i)(?<![a-zа-я])(?:" + words + r")[\s._:#-]*" + _NUM,
               _NUM + r"\s*[-_ ]?\s*(?:bob|qism|화|話|话|回|chi\b)",
               r"第\s*" + _NUM):
         m = re.search(p, s)
         if m:
             return _to_num(m.group(1))
+    if strict:
+        return None
     nums = re.findall(r"(?<![\d.,])" + _NUM + r"(?![\d])", s)
     if not nums:
         return None

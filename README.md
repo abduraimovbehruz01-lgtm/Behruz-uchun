@@ -26,13 +26,23 @@ boblarni yuklaydi (kerak bo‘lsa bot ularni o‘zi tarjima qiladi).
   yangi ismlarni o‘zi taklif qiladi.
 - **Adminlar** (faqat bosh admin): ID, kontakt yoki forward orqali qo‘shish, har biriga alohida huquqlar.
 - **Jurnal**: kim qachon nima qilgani. **Majburiy obuna**: kanallarni paneldan qo‘shish/o‘chirish.
+- **🔗 Hamkor manbalar**: ruxsat bergan tarjimon jamoa yoki muallif botni o‘z kanaliga admin qiladi, admin
+  kanalni mangaga bog‘laydi (kalit so‘z, tarjima kerakmi, ruxsat izohi, «Tarjima: …» yozuvi). Kanalga tashlangan
+  har bir bob — ZIP/CBZ/PDF, rasmlar albomi yoki Telegraph havolasi — o‘zi olinadi, kerak bo‘lsa tarjima qilinadi
+  va **bepul** chop etiladi. Bor yoki takroriy bob qayta olinmaydi; tarjima sifati past bo‘lsa — qoralama bo‘lib
+  adminga keladi; Gemini limiti tugasa — navbatda kutib turadi; kuniga ko‘pi bilan 20 bob (`auto_daily`).
+- **📣 Reklama kanali**: har yangi bob (qo‘lda, rejali yoki hamkor manbadan) chop etilganda kanalga muqova,
+  bob raqami, kod va «📖 O‘qish» tugmasi bilan post o‘zi chiqadi. Sinov posti, to‘xtatish, uzish.
+- **✍️ Tarjimon yozuvi**: manga yoki bob uchun «Tarjima: … jamoasi» — kartada, o‘qishda va reklama postida ko‘rinadi.
+- Botni yangi kanalga qo‘shsangiz, bot kanal nima uchun ekanini so‘raydi: ombor, majburiy obuna, reklama yoki
+  hamkor manba. Begona odam botni o‘z kanaliga qo‘shsa — bosh adminga «manba qilib ulash» tugmasi bilan xabar keladi.
 - Rasmlar ombori: yopiq kanal oching va botni unga admin qiling — bot o‘zi aniqlaydi.
 - Sahifa yoki fayl yuborsangiz — tarjima qilib qaytaradi (tezkor tarjima, faqat adminlar uchun).
 
 ## Fayllar
 `bot.py` (ishga tushirish), `reader.py` (o‘quvchilar), `admin.py` (admin panel, bob yuklash, chop etish),
-`staff.py` (adminlar, jurnal, majburiy obuna), `editor.py` (bob tahriri, glossariy), `scheduler.py` (rejadagi boblar),
-`tools.py` (tezkor tarjima),
+`staff.py` (adminlar, jurnal, majburiy obuna, reklama kanali), `editor.py` (bob tahriri, glossariy),
+`scheduler.py` (rejadagi boblar), `autosrc.py` (hamkor kanallar), `promo.py` (yangi bob e’loni), `tools.py` (tezkor tarjima),
 `catalog.py` (katalog mantiqi), `store.py` (Firebase / xotira), `core.py` (umumiy), `translator.py`, `typeset.py`,
 `chapters.py` (tarjima, rasmga yozish, PDF/ZIP).
 
@@ -56,6 +66,8 @@ boblarni yuklaydi (kerak bo‘lsa bot ularni o‘zi tarjima qiladi).
 
 ## Cheklovlar
 - Telegram botlarga 20 MB dan katta faylni yuklab olishga ruxsat bermaydi — katta faylni havola qilib yuboring.
+  Hamkor kanaldagi 20 MB dan katta fayl ham avtomatik olinmaydi (bot adminga shu haqda yozadi).
+- Hamkor manba faqat **ruxsat bilan**: kim, qachon, qanday ruxsat bergani manba kartasida saqlanadi.
 - Gemini bepul limiti kunlik; har sahifa = 1 so‘rov (uzun webtoon — bir nechta). Limit kalitga emas, Google loyihasiga bog‘langan.
 - Render bepul tarifida server 15 daqiqa ishlatilmasa uxlaydi — birinchi javob ~1 daqiqa kechikadi.
   Rejadagi bob: server uyg‘oq bo‘lsa — aniq vaqtida chiqadi (yaqin 20 daqiqada bob bo‘lsa, bot o‘zini uyg‘oq tutadi);
