@@ -1,0 +1,28 @@
+# Manhora bot (manga-tarjima branchi, Render) bepul serverda 15 daqiqa ishlatilmasa uxlab qoladi.
+# Rejalashtirilgan boblar vaqtida chiqishi uchun bu ish har kuni chiqish soatlaridan 10 daqiqa oldin
+# serverni uyg'otadi. Toshkent vaqti: 08:50, 11:50, 14:50, 17:50, 20:50 (UTC: 03:50 ... 15:50).
+# Saytga (index.html va boshqalar) hech qanday ta'siri yo'q.
+name: Manhora — serverni uyg'otish
+
+on:
+  schedule:
+    - cron: "50 3,6,9,12,15 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  uygotish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Botni uyg'otish (/health)
+        run: |
+          for i in 1 2 3; do
+            if curl -fsS --max-time 120 https://manga-tarjima.onrender.com/health; then
+              echo " — server uyg'oq"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Server javob bermadi — keyingi safar yana urinadi"
