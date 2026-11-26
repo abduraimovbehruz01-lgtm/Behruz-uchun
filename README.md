@@ -1,36 +1,44 @@
-# Manga tarjimon bot
+# Manhora — manga o‘qish boti
 
-Telegram bot: manga, manhva yoki manxua sahifasini yuborasiz — u matnlarni topadi, **o‘zbek tiliga** tarjima qiladi
-va rasmning o‘ziga (pufaklar ichiga) yozib qaytaradi.
+Telegram bot: foydalanuvchilar manga va manhvalarni **o‘zbek tilida** o‘qiydi, adminlar esa mangalarni qo‘shadi va
+boblarni yuklaydi (kerak bo‘lsa bot ularni o‘zi tarjima qiladi).
 
-## Nima qila oladi
-- 📷 **Rasm** → tarjima qilingan rasm. Fayl qilib yuborilsa — fayl qilib qaytaradi (sifat yo‘qolmaydi).
-- 🖼 **Albom** → har bir sahifa tartib bilan tarjima qilinadi.
-- 📚 **PDF / ZIP / CBZ** (butun bob, 20 MB gacha) → o‘sha formatda qaytaradi: PDF → PDF, ZIP/CBZ → ZIP/CBZ (+ o‘qish uchun PDF).
-- Uzun webtoon rasmlarini o‘zi bo‘laklarga bo‘lib tarjima qiladi.
-- Har bir sahifa ostida **📝 Matn** tugmasi — asl matn va tarjimasi.
-- Kunlik limit, majburiy obuna (ixtiyoriy), adminga `/stat`.
+## Foydalanuvchi uchun
+- 🔢 Manga **kodi** (masalan `101`) yoki havola `t.me/ManhoraBot?start=101` → manga kartasi.
+- 📚 Katalog, 🔥 mashhurlar, 🏷 janrlar, 🔎 nom bo‘yicha qidiruv.
+- 📖 Botda o‘qish: sahifalar albom bo‘lib keladi, «Keyingi bob» tugmasi, 📄 PDF qilib olish.
+- ❤️ Sevimlilar, 🔔 kuzatish (yangi bob chiqsa xabar), ▶️ qolgan joydan davom ettirish.
+- 🔒 Pullik boblar jeton bilan ochiladi (pullik boblar forward/saqlashdan himoyalangan), 💎 VIP.
 
-## Qanday ishlaydi
+## Admin uchun (`/admin`)
+- Manga qo‘shish (nomi, tavsif, janr, muqova, kod) va tahrirlash, yashirish, o‘chirish.
+- Bob qo‘shish: ZIP/CBZ/PDF yoki rasmlar → «tarjima qilinsinmi?» → omborga yuklanadi → ko‘rib chiqib,
+  bepul yoki pullik (1–10 🪙) qilib chop etiladi → kuzatuvchilarga xabar boradi.
+- Rasmlar ombori: yopiq kanal oching va botni unga admin qiling — bot o‘zi aniqlaydi.
+- Sahifa yoki fayl yuborsangiz — tarjima qilib qaytaradi (tezkor tarjima, faqat adminlar uchun).
+
+## Fayllar
+`bot.py` (ishga tushirish), `reader.py` (o‘quvchilar), `admin.py` (admin), `tools.py` (tezkor tarjima),
+`catalog.py` (katalog mantiqi), `store.py` (Firebase / xotira), `core.py` (umumiy), `translator.py`, `typeset.py`,
+`chapters.py` (tarjima, rasmga yozish, PDF/ZIP).
+
+## Sozlamalar (Render → Environment)
+| Nomi | Nima |
+|---|---|
+| `BOT_TOKEN` | @BotFather tokeni (**majburiy**) |
+| `GEMINI_API_KEY` | aistudio.google.com kaliti (**majburiy**) |
+| `FIREBASE_SERVICE_ACCOUNT` | Firebase kalit faylining matni (JSON). Bo‘lmasa ma’lumotlar qayta ishga tushganda o‘chadi |
+| `OWNER_IDS` | bosh admin(lar) Telegram ID si |
+| `REQUIRED_CHANNEL` | majburiy obuna kanali, masalan `@kanalim` (ixtiyoriy) |
+| `STORAGE_CHAT` | rasmlar ombori kanali (odatda bot o‘zi aniqlaydi) |
+
+## Tarjima qanday ishlaydi
 1. `translator.py` — Google Gemini sahifani ko‘radi: har bir pufakning joyi (box_2d), asl matni va tarjimasini qaytaradi.
    Bir nechta model navbat bilan ishlatiladi: biri band yoki bepul limiti tugasa — keyingisi.
 2. `typeset.py` — asl harflarni o‘chiradi (pufak chizig‘i va rasmga tegmaydi), pufakning ichki chegarasini topadi
    va o‘zbekcha matnni sig‘adigan eng katta o‘lchamda yozadi. Rastr ustidagi matnga oq plashka qo‘yiladi.
 3. `chapters.py` — ZIP/CBZ/PDF ichidan sahifalarni oladi, natijadan PDF va ZIP yasaydi.
 4. `bot.py` — Telegram qismi (aiogram 3, Render uchun webhook).
-
-## Sozlamalar (Render → Environment)
-| Nomi | Nima | Standart |
-|---|---|---|
-| `BOT_TOKEN` | @BotFather bergan token | **majburiy** |
-| `GEMINI_API_KEY` | aistudio.google.com → Get API key | **majburiy** |
-| `OWNER_IDS` | sizning Telegram ID ingiz (limit yo‘q, `/stat`) | — |
-| `DAILY_LIMIT` | bir kishiga kuniga nechta sahifa (`0` = cheksiz) | `40` |
-| `MAX_PAGES` | bitta fayldan eng ko‘pi nechta sahifa | `60` |
-| `REQUIRED_CHANNEL` | majburiy obuna kanali, masalan `@kanalim` (botni kanalga admin qiling) | — |
-| `ALLOWED_IDS` | to‘ldirilsa, botdan faqat shu ID lar foydalanadi | — |
-| `GEMINI_MODEL` | modellar ro‘yxati, vergul bilan | kodda |
-| `PLATE` | `0` — rastr ustidagi matnga oq plashka qo‘ymaslik | `1` |
 
 ## Cheklovlar
 - Telegram botlarga 20 MB dan katta faylni yuklab olishga ruxsat bermaydi — katta bobni qismlarga bo‘lib yuboring.

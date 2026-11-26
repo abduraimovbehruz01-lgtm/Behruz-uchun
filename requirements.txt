@@ -4,3 +4,4 @@ pillow>=10.4
 opencv-python-headless>=4.9
 fonttools>=4.47
 pypdfium2>=4.30
+google-cloud-firestore>=2.16
