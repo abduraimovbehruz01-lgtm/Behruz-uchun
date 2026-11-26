@@ -46,6 +46,7 @@ class Sess:
     rtl: bool = False
     panels: list = field(default_factory=list)
     texts: list | None = None
+    orig: list | None = None     # foydalanuvchi yuborgan asl qatorlar (tarjimadan oldin)
     silent: str | None = None
     total: float = 0.0
     out: str | None = None
@@ -212,7 +213,8 @@ def _texts_prompt(s):
     return (f"✅ <b>{n}</b> ta panel topildi (raqamlari rasmda).\n\n"
             "Endi matnni yuboring: <b>har panel uchun bitta qator</b> (1-qator → 1-panel, 2-qator → 2-panel …). "
             "Panelga matn kerak bo‘lmasa shu qatorga «-» yozing.\n"
-            "Boshqacha usul: qatorlarni raqam bilan yozsangiz (<code>3. matn</code>), faqat kerakli panellarga qo‘yiladi.\n\n"
+            "Boshqacha usul: qatorlarni raqam bilan yozsangiz (<code>3. matn</code>), faqat kerakli panellarga qo‘yiladi.\n"
+            "🌐 Inglizcha yoki boshqa tilda yozsangiz ham bo‘ladi — o‘zbekchaga o‘giraman va avval sizga ko‘rsataman.\n\n"
             "Panellar noto‘g‘ri kesilgan yoki tartibi teskari bo‘lsa — pastdagi tugma bilan o‘qish yo‘nalishini almashtiring.")
 
 
@@ -277,6 +279,59 @@ def parse_lines(text, n):
     return out, warn, None
 
 
+TR_SCHEMA = {"type": "OBJECT", "properties": {"qatorlar": {"type": "ARRAY", "items": {"type": "STRING"}}},
+             "required": ["qatorlar"]}
+
+
+def _norm(t):
+    return " ".join((t or "").lower().replace("ʻ", "‘").replace("’", "‘").replace("'", "‘").split())
+
+
+async def translate_lines(lines):
+    """Qatorlarni o'zbekchaga (lotin) o'giradi. O'zbekcha qatorlar o'zgarishsiz qoladi.
+    Qaytaradi: yangi qatorlar ro'yxati yoki None (Gemini javob bermasa)."""
+    idx = [i for i, t in enumerate(lines) if t.strip()]
+    if not idx:
+        return list(lines)
+    numbered = "\n".join(f"{k + 1}. {lines[i]}" for k, i in enumerate(idx))
+    prompt = (
+        "You prepare subtitles for a short vertical video made from manga / webtoon panels. "
+        f"Below are {len(idx)} numbered subtitle lines, one per panel. For EACH line:\n"
+        "- if it is already Uzbek in Latin script, return it EXACTLY unchanged;\n"
+        "- if it is Uzbek in Cyrillic, convert it to Latin script;\n"
+        "- otherwise translate it into natural, vivid spoken Uzbek (Latin script, apostrophes as in o‘, g‘), "
+        "short and punchy like a subtitle, keeping the emotion, punctuation and character names.\n"
+        f"Return JSON {{\"qatorlar\": [...]}} with exactly {len(idx)} strings in the same order, no numbering.\n\n"
+        + numbered)
+    for attempt in range(2):
+        try:
+            data = await D.gem.generate_json(D.http(), [{"text": prompt}], TR_SCHEMA, temperature=0.3,
+                                             timeout=120, max_wait=60)
+            out = [str(x).strip() for x in (data.get("qatorlar") or [])]
+            if len(out) == len(idx):
+                res = list(lines)
+                for k, i in enumerate(idx):
+                    res[i] = out[k] or lines[i]
+                return res
+            log.warning("tarjima: qator soni mos emas (%d != %d)", len(out), len(idx))
+        except Exception as e:
+            log.warning("tarjima xato (%d): %r", attempt + 1, e)
+            break
+    return None
+
+
+def _preview(texts, limit=3300):
+    rows = [f"{i + 1}) {t if t else '—'}" for i, t in enumerate(texts)]
+    out, size = [], 0
+    for r in rows:
+        if size + len(r) > limit:
+            out.append("…")
+            break
+        out.append(r)
+        size += len(r) + 1
+    return esc("\n".join(out))
+
+
 async def on_text(m: Message):
     s = SESS.get(m.from_user.id)
     if not s or s.state != "texts":
@@ -286,7 +341,28 @@ async def on_text(m: Message):
     texts, warn, err = parse_lines(m.text, len(s.panels))
     if err:
         return await m.answer("❌ " + err)
+    s.orig = texts
     s.texts = texts
+    st = await m.answer("🌐 Matn tekshirilmoqda (o‘zbekchaga o‘giraman)…") if any(texts) else None
+    tr = await translate_lines(texts) if any(texts) else texts
+    if st:
+        try:
+            await st.delete()
+        except Exception:
+            pass
+    if tr is None:
+        note = "⚠️ Tarjima qilib bo‘lmadi (Gemini band), matn o‘zgartirilmadi."
+        if warn:
+            note += "\n" + warn
+        return await m.answer(note + "\nShunday yasaymi?", reply_markup=kb([("🎬 Shunday yasash", "mg_go")]))
+    changed = any(_norm(a) != _norm(b) for a, b in zip(texts, tr))
+    s.texts = tr
+    if changed:
+        head = "🌐 <b>O‘zbekchaga o‘girdim:</b>\n\n"
+        tail = ("\n\nMaqul bo‘lsa «🎬 Yasash» ni bosing. Tuzatmoqchi bo‘lsangiz — tuzatilgan matnni qayta yuboring."
+                + (f"\n\n{warn}" if warn else ""))
+        return await m.answer(head + _preview(tr) + tail,
+                              reply_markup=kb([("🎬 Yasash", "mg_go")], [("↩️ Asl matn bilan yasash", "mg_orig")]))
     if warn:
         return await m.answer(warn, reply_markup=kb([("🎬 Shunday yasash", "mg_go")]))
     await render(s)
@@ -449,6 +525,16 @@ async def on_cb(c: CallbackQuery):
             pass
         if s.texts is None:
             s.texts = [""] * len(s.panels)
+        return await render(s)
+    if act == "mg_orig":
+        if s.state != "texts":
+            return await c.answer()
+        await c.answer()
+        try:
+            await c.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        s.texts = s.orig or s.texts
         return await render(s)
     if act in ("mg_mnext", "mg_mnone", "mg_mback"):
         if s.state != "done" or not s.silent or not os.path.exists(s.silent):
