@@ -138,7 +138,7 @@ async def cmd_manga(m: Message):
     SESS[s.uid] = s
     sm = await m.answer(
         "🎞 <b>Manga-video</b>\n\n"
-        "Manga sahifalarini yuboring: <b>rasm</b> (sifat uchun «fayl» qilib yuborgan yaxshi) yoki <b>ZIP / CBZ</b>. "
+        "Manga sahifalarini yuboring: <b>rasm</b> (sifat uchun «fayl» qilib yuborgan yaxshi), <b>PDF</b> yoki <b>ZIP / CBZ</b>. "
         "Webtoon bo‘laklarini ham shunday yuborasiz.\n\n"
         "Hammasini yuborib bo‘lgach «✅ Tugadi» ni bosing — men panellarni qirqib, raqamlab ko‘rsataman.",
         reply_markup=kb([("❌ Bekor", "mg_cancel")]))
@@ -172,7 +172,7 @@ async def on_page(m: Message):
                                               "application/vnd.comicbook+zip"):
             kind = "zip"
         elif mime == "application/pdf" or name.lower().endswith(".pdf"):
-            return await m.answer("PDF hozircha qabul qilinmaydi. Sahifalarni rasm yoki ZIP qilib yuboring 🙏")
+            kind = "pdf"
         else:
             raise SkipHandler()    # qo'shiq/video bo'lsa — oddiy oqim ko'rsin
         fid, size = doc.file_id, doc.file_size or 0
@@ -194,6 +194,11 @@ async def on_page(m: Message):
             os.remove(path)
             if not paths:
                 await m.answer("ZIP ichida rasm topilmadi.")
+        elif kind == "pdf":
+            paths = await asyncio.to_thread(manga.pdf_to_images, path, os.path.join(s.dir, "pages", f"z{m.message_id}"))
+            os.remove(path)
+            if not paths:
+                await m.answer("PDF ichidan sahifa chiqmadi.")
         else:
             paths = [path]
         if paths:

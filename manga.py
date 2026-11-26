@@ -68,6 +68,19 @@ def extract_zip(zip_path, outdir):
     return res
 
 
+def pdf_to_images(pdf_path, outdir, max_pages=300):
+    """PDF sahifalarini rasmga aylantiradi (poppler: pdftoppm), eni 1080 px. Qaytaradi: rasmlar ro'yxati."""
+    import subprocess
+    os.makedirs(outdir, exist_ok=True)
+    prefix = os.path.join(outdir, "pg")
+    r = subprocess.run(["pdftoppm", "-jpeg", "-jpegopt", "quality=90", "-scale-to-x", "1080", "-scale-to-y", "-1",
+                        "-l", str(max_pages), pdf_path, prefix], capture_output=True, text=True, timeout=900)
+    if r.returncode != 0:
+        raise RuntimeError("PDF o'qilmadi: " + (r.stderr or "").strip()[:200])
+    return sorted((os.path.join(outdir, f) for f in os.listdir(outdir) if f.startswith("pg") and f.endswith(".jpg")),
+                  key=natural_key)
+
+
 def _open_rgb(path):
     im = Image.open(path)
     im = ImageOps.exif_transpose(im)

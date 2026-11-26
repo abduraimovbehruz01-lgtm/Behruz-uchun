@@ -34,14 +34,14 @@ Tugmalar: «🎞 Boshqa sahna», «🎵 Boshqa qo‘shiq», «🔇 Qo‘shiqsiz�
 
 Manga yoki webtoon sahifalaridan, o‘zingiz yozgan o‘zbekcha matn bilan vertikal (9:16, 720×1280) video:
 
-1. `/manga` deb yozing, so‘ng sahifalarni yuboring: rasm (yaxshisi «fayl» qilib) yoki ZIP / CBZ. Webtoon bo‘laklari ketma-ket yuboriladi, bot ularni o‘zi ulaydi.
+1. `/manga` deb yozing, so‘ng sahifalarni yuboring: rasm (yaxshisi «fayl» qilib), PDF yoki ZIP / CBZ. Webtoon bo‘laklari ketma-ket yuboriladi, bot ularni o‘zi ulaydi.
 2. «✅ Tugadi» ni bosing. Bot panellarni oq/qora oraliqlar bo‘yicha qirqib, raqamlangan rasm yuboradi.
 3. Matnni yuboring: **har panel uchun bitta qator** (1-qator → 1-panel). Matn kerak bo‘lmasa qatorga `-` yozing. Qatorlarni raqam bilan ham yozsa bo‘ladi (`3. matn`), shunda faqat shu panellarga qo‘yiladi. Qator kam bo‘lsa, qolgan panellar matnsiz chiqadi (bot so‘raydi). Matn inglizcha yoki boshqa tilda bo‘lsa, Gemini uni o‘zbekchaga (lotin) o‘giradi va avval sizga ko‘rsatadi: «🎬 Yasash» yoki «↩️ Asl matn bilan yasash». O‘zbekcha matn o‘zgarmaydi.
 4. Bot videoni yasaydi: panel sekin yaqinlashadi, uzun panel yuqoridan pastga suriladi, eni kichik panelning orqasida xira fon bo‘ladi. Yuqori chapda Telegram belgisi va **MANHORA** yozuvi, pastda qalin oq subtitr. Qo‘shiq kutubxonadan olinadi (kino ovozi yo‘q).
 5. Tugmalar: «🎵 Boshqa qo‘shiq», «🔇 Qo‘shiqsiz», «🔄 Matnni o‘zgartirish». Panellar teskari tartibda chiqsa (yapon manga), tugma bilan o‘qish yo‘nalishini almashtiring.
 
 Sozlamalar (ixtiyoriy): `MANGA_BADGE` (yuqoridagi yozuv, standart `MANHORA`), `MANGA_FPS` (24), `MANGA_W` (720), `MANGA_MIN_SEC` (2.2), `MANGA_SEC_PER_CHAR` (0.075), `MANGA_MAX_PANELS` (200).
-Hozircha PDF qabul qilinmaydi. Seans xotirada turadi: server qayta ishga tushsa, `/manga` dan boshlanadi.
+PDF sahifalari rasmga aylantiriladi (eni 1080 px, 300 sahifagacha). Seans xotirada turadi: server qayta ishga tushsa, `/manga` dan boshlanadi.
 
 ## Sozlamalar (Render → Environment)
 
