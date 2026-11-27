@@ -33,7 +33,8 @@ CANCEL = ("❌ Bekor qilish", "adm:cancel")
 
 HOWTO = ("🖼 <b>Cloudflare — ilova rasmlari uchun (bepul)</b>\n\n"
          "1) <b>cloudflare.com</b> da ro‘yxatdan o‘ting (bepul).\n"
-         "2) O‘ng yuqoridagi profil belgisi → <b>My Profile</b> → <b>API Tokens</b> → <b>Create Token</b>.\n"
+         "2) Shu sahifani oching: https://dash.cloudflare.com/profile/api-tokens (yoki o‘ng yuqoridagi 👤 → "
+         "<b>Profile</b> → <b>API Tokens</b>) → <b>Create Token</b>.\n"
          "3) <b>«Edit Cloudflare Workers»</b> qatoridagi <b>Use template</b> → pastda <b>Continue to summary</b> → "
          "<b>Create Token</b>.\n"
          "4) Chiqqan tokenni nusxalab, <b>shu yerga</b> yuboring.\n\n"
@@ -107,17 +108,24 @@ async def deploy(token, progress=None, account=None, subdomain=None) -> dict:
             except Exception:
                 pass
 
+    def active(st, d):
+        return st == 200 and d.get("success") and (d.get("result") or {}).get("status") == "active"
+
     await say("🔑 Token tekshirilmoqda…")
-    st, d = await cf("GET", "/user/tokens/verify", token)
-    if st != 200 or not d.get("success") or (d.get("result") or {}).get("status") != "active":
-        raise CfError("Token noto‘g‘ri yoki faol emas. «Edit Cloudflare Workers» shabloni bilan yangi token yarating.")
+    user_ok = active(*await cf("GET", "/user/tokens/verify", token))     # shaxsiy (My Profile) token
     if not account:
         st, d = await cf("GET", "/accounts?per_page=5", token)
-        accs = [a for a in (d.get("result") or []) if isinstance(a, dict) and a.get("id")]
-        if st != 200 or not accs:
-            raise CfError("Cloudflare hisobi topilmadi. Tokenni «Edit Cloudflare Workers» shabloni bilan yarating "
-                          "(unda kerakli huquqlar bor).")
-        account = accs[0]["id"]
+        accs = [a["id"] for a in (d.get("result") or []) if isinstance(a, dict) and a.get("id")]
+        if not accs:                                                     # hisoblar ro'yxati yopiq bo'lsa
+            st, d = await cf("GET", "/memberships?per_page=5", token)
+            accs = [(m.get("account") or {}).get("id") for m in (d.get("result") or []) if isinstance(m, dict)]
+            accs = [a for a in accs if a]
+        if not accs:
+            raise CfError("Token noto‘g‘ri yoki Cloudflare hisobini ko‘ra olmaydi. «Edit Cloudflare Workers» shabloni "
+                          "bilan yangi token yarating va to‘liq nusxalab yuboring.")
+        account = accs[0]
+    if not user_ok and not active(*await cf("GET", f"/accounts/{account}/tokens/verify", token)):  # hisob tokeni
+        raise CfError("Token noto‘g‘ri yoki faol emas. «Edit Cloudflare Workers» shabloni bilan yangi token yarating.")
     if not subdomain:
         await say("🌐 workers.dev manzili tayyorlanmoqda…")
         st, d = await cf("GET", f"/accounts/{account}/workers/subdomain", token)

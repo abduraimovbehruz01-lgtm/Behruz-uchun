@@ -11,6 +11,7 @@ import core, admin, cloudflare, webapp
 
 CAT = core.CAT
 GOOD = "Abc123_def456-GHI789jklMNO012pqrSTU345v"
+ACCT = "Acct99_account-owned-token-ZZZ0123456789"
 
 
 def last(kind=None, chat=None, has=None):
@@ -39,11 +40,13 @@ class CF:
         path = url.replace(cloudflare.API, "")
         self.calls.append((method, path, headers or {}, data, json))
         auth = (headers or {}).get("Authorization", "")
-        if auth != f"Bearer {GOOD}":
-            return R(200 if path == "/user/tokens/verify" else 403,
-                     {"success": False, "errors": [{"code": 1000, "message": "Invalid API Token"}]})
-        if path == "/user/tokens/verify":
-            return R(200, {"success": True, "result": {"status": "active"}})
+        bad = R(401, {"success": False, "errors": [{"code": 1000, "message": "Invalid API Token"}]})
+        if auth not in (f"Bearer {GOOD}", f"Bearer {ACCT}"):
+            return bad
+        if path == "/user/tokens/verify":                         # hisob tokeni bu yerda o'tmaydi
+            return R(200, {"success": True, "result": {"status": "active"}}) if auth == f"Bearer {GOOD}" else bad
+        if path == "/accounts/acc1/tokens/verify":
+            return R(200, {"success": True, "result": {"status": "active"}}) if auth == f"Bearer {ACCT}" else bad
         if path.startswith("/accounts?"):
             return R(200, {"success": True, "result": [{"id": "acc1", "name": "Behruz"}]})
         if path == "/accounts/acc1/workers/subdomain" and method == "GET":
@@ -84,6 +87,13 @@ async def main():
     except cloudflare.CfError as e:
         assert "noto‘g‘ri" in str(e)
     print("ok: noto‘g‘ri token — tushunarli xato")
+    # «Manage Account» dagi hisob tokeni ham ishlaydi
+    cfa = CF(has_subdomain=True)
+    cloudflare.http = lambda: cfa
+    info = await cloudflare.deploy(ACCT)
+    assert info["account"] == "acc1" and cfa.script and any(c[1] == "/accounts/acc1/tokens/verify" for c in cfa.calls)
+    cloudflare.http = lambda: cf
+    print("ok: hisob tokeni (Manage Account → API Tokens) ham qabul qilinadi")
 
     # to'liq ulanish (workers.dev manzili yo'q — yaratiladi)
     steps = []
