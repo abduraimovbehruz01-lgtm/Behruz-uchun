@@ -1,7 +1,8 @@
 """Manga-video: botdagi /manga buyrug'i.
 
 Oqim: /manga → manga sahifalari (rasm yoki ZIP/CBZ) → «✅ Tugadi» → bot panellarni kesib raqamlangan rasm yuboradi →
-siz har panel uchun bitta qator matn yuborasiz → bot subtitrli vertikal (9:16) video yasaydi, qo'shiq qo'shadi.
+siz har panel uchun bitta qator matn yuborasiz → ovozsiz, ElevenLabs ovozi bilan yoki o'zingiz yuborgan audio
+(Blox lab, o'z ovozingiz) bilan subtitrli vertikal (9:16) video yasaydi, qo'shiq qo'shadi.
 
 Bu modul bot.py dagi umumiy narsalardan (bot, dp, music, gem, HEAVY ...) foydalanadi: setup() ularni oladi va
 handlerlarni dp ga BIRINCHI bo'lib ro'yxatdan o'tkazadi (kino oqimiga xalaqit bermaslik uchun faqat /manga seansi
@@ -23,6 +24,7 @@ from aiogram.types import (CallbackQuery, FSInputFile, InlineKeyboardButton, Inl
                            Message)
 
 import manga
+import video
 
 log = logging.getLogger("mangabot")
 
@@ -31,6 +33,8 @@ SESS: dict = {}
 IMG_MIME = ("image/jpeg", "image/png", "image/webp", "image/bmp", "image/gif", "image/tiff")
 ZIP_EXT = re.compile(r"\.(zip|cbz)$", re.I)
 NUM_LINE = re.compile(r"^\s*(\d{1,3})\s*[.):]\s+(.*)$")
+AUDIO_EXT = re.compile(r"\.(mp3|m4a|aac|wav|ogg|oga|opus|flac|amr|wma|mp4a)$", re.I)
+TEXT_WAIT = 2.0   # uzun matnni Telegram bir necha xabarga bo'ladi — shuncha kutib, birlashtiramiz
 MAX_FILE = 200 * 1024 * 1024
 
 
@@ -56,6 +60,13 @@ class Sess:
     refresh_task: asyncio.Task | None = None
     last_user_mid: int | None = None
     seq: int = 0
+    infos: list | None = None      # panel kadrlari (prepare_all), qayta hisoblamaslik uchun
+    voice_wav: str | None = None   # ovozli videoning ovoz yo'lagi
+    voice_level: float = -20.0
+    voice_name: str = ""
+    buf: list = field(default_factory=list)   # kelayotgan matn bo'laklari
+    buf_t: float = 0.0
+    text_task: asyncio.Task | None = None
 
 
 def esc(s):
@@ -260,7 +271,8 @@ def _texts_prompt(s):
             "Endi matnni yuboring: <b>har panel uchun bitta qator</b> (1-qator → 1-panel, 2-qator → 2-panel …). "
             "Panelga matn kerak bo‘lmasa shu qatorga «-» yozing.\n"
             "Boshqacha usul: qatorlarni raqam bilan yozsangiz (<code>3. matn</code>), faqat kerakli panellarga qo‘yiladi.\n"
-            "🌐 Inglizcha yoki boshqa tilda yozsangiz ham bo‘ladi — o‘zbekchaga o‘giraman va avval sizga ko‘rsataman.\n\n"
+            "🌐 Inglizcha yoki boshqa tilda yozsangiz ham bo‘ladi — o‘zbekchaga o‘giraman va avval sizga ko‘rsataman.\n"
+            "🎙 Matndan keyin ovoz qo‘shish mumkin: ElevenLabs yoki o‘zingiz yuborgan audio (Blox lab, o‘z ovozingiz).\n\n"
             "Panellar noto‘g‘ri kesilgan yoki tartibi teskari bo‘lsa — pastdagi tugma bilan o‘qish yo‘nalishini almashtiring.")
 
 
@@ -284,7 +296,7 @@ async def analyse(s):
     if not panels:
         s.state = "pages"
         return await st.edit_text("Panel topilmadi. Rasmlar to‘g‘ri ekanini tekshiring.")
-    s.panels, s.texts = panels, None
+    s.panels, s.texts, s.infos, s.voice_wav = panels, None, None, None
     try:
         await st.delete()
     except Exception:
@@ -379,18 +391,76 @@ def _preview(texts, limit=3300):
     return esc("\n".join(out))
 
 
+def _choice_text(s):
+    n_txt = sum(1 for t in (s.texts or []) if t)
+    t = (f"📝 Matn tayyor: <b>{n_txt}</b> ta qator, <b>{len(s.panels)}</b> ta panel.\n\n"
+         "Endi tanlang:\n"
+         "🎬 <b>Ovozsiz</b> — subtitr va qo‘shiq.\n")
+    if D.eleven_key:
+        t += "🎙 <b>ElevenLabs</b> — bot matnni o‘zi o‘qitadi.\n"
+    t += ("🎤 <b>O‘z audiongiz</b> — Blox lab yoki o‘zingiz yozgan ovozni shu yerga yuboring (forward ham bo‘ladi): "
+          "bot har bir qatorni ovozga moslaydi. Ovoz uchun toza matnni «📋 Ovoz uchun matn» beradi.")
+    return t
+
+
+def _choice_kb(s, with_orig=False):
+    rows = [[("🎬 Ovozsiz yasash", "mg_go")]]
+    if D.eleven_key:
+        rows.append([("🎙 ElevenLabs bilan o‘qit", "mg_eleven")])
+    rows.append([("📋 Ovoz uchun matn", "mg_copy")])
+    if with_orig:
+        rows.append([("↩️ Asl matnni qoldirish", "mg_orig")])
+    return kb(*rows)
+
+
+async def _st(msg, text):
+    try:
+        await msg.edit_text(text)
+    except Exception:
+        pass
+
+
 async def on_text(m: Message):
+    """Matn qatorlari. Telegram uzun matnni bir necha xabarga bo'ladi — 2 soniya jimlikdan keyin birlashtiramiz."""
     s = SESS.get(m.from_user.id)
     if not s or s.state != "texts":
         raise SkipHandler()
     s.last = time.time()
     s.last_user_mid = m.message_id
-    texts, warn, err = parse_lines(m.text, len(s.panels))
+    s.buf.append((m.message_id, m.text or ""))
+    s.buf_t = time.time()
+    if not s.text_task or s.text_task.done():
+        s.text_task = asyncio.create_task(_text_worker(s))
+
+
+async def _text_worker(s):
+    try:
+        while s.buf:
+            while time.time() - s.buf_t < TEXT_WAIT:
+                await asyncio.sleep(max(0.2, TEXT_WAIT - (time.time() - s.buf_t)))
+            parts = [t for _, t in sorted(s.buf)]
+            s.buf = []
+            if s.state != "texts" or SESS.get(s.uid) is not s:
+                return
+            await process_text(s, "\n".join(parts))
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.exception("manga matn xato")
+        try:
+            await D.bot.send_message(s.chat_id, f"❌ Matnni o‘qishda xatolik: {esc(D.short_err(e))}")
+        except Exception:
+            pass
+
+
+async def process_text(s, text):
+    texts, warn, err = parse_lines(text, len(s.panels))
     if err:
-        return await m.answer("❌ " + err)
+        return await D.bot.send_message(s.chat_id, "❌ " + err)
     s.orig = texts
     s.texts = texts
-    st = await m.answer("🌐 Matn tekshirilmoqda (o‘zbekchaga o‘giraman)…") if any(texts) else None
+    s.voice_wav = None          # yangi matn — eski ovoz endi mos kelmaydi
+    st = await D.bot.send_message(s.chat_id, "🌐 Matn tekshirilmoqda (o‘zbekchaga o‘giraman)…") if any(texts) else None
     tr = await translate_lines(texts) if any(texts) else texts
     if st:
         try:
@@ -401,18 +471,43 @@ async def on_text(m: Message):
         note = "⚠️ Tarjima qilib bo‘lmadi (Gemini band), matn o‘zgartirilmadi."
         if warn:
             note += "\n" + warn
-        return await m.answer(note + "\nShunday yasaymi?", reply_markup=kb([("🎬 Shunday yasash", "mg_go")]))
+        return await D.bot.send_message(s.chat_id, note + "\n\n" + _choice_text(s), reply_markup=_choice_kb(s))
     changed = any(_norm(a) != _norm(b) for a, b in zip(texts, tr))
     s.texts = tr
     if changed:
-        head = "🌐 <b>O‘zbekchaga o‘girdim:</b>\n\n"
-        tail = ("\n\nMaqul bo‘lsa «🎬 Yasash» ni bosing. Tuzatmoqchi bo‘lsangiz — tuzatilgan matnni qayta yuboring."
-                + (f"\n\n{warn}" if warn else ""))
-        return await m.answer(head + _preview(tr) + tail,
-                              reply_markup=kb([("🎬 Yasash", "mg_go")], [("↩️ Asl matn bilan yasash", "mg_orig")]))
-    if warn:
-        return await m.answer(warn, reply_markup=kb([("🎬 Shunday yasash", "mg_go")]))
-    await render(s)
+        tail = "\n\nTuzatmoqchi bo‘lsangiz — tuzatilgan matnni qayta yuboring." + (f"\n\n{warn}" if warn else "")
+        await D.bot.send_message(s.chat_id, "🌐 <b>O‘zbekchaga o‘girdim:</b>\n\n" + _preview(tr) + tail)
+        return await D.bot.send_message(s.chat_id, _choice_text(s), reply_markup=_choice_kb(s, with_orig=True))
+    await D.bot.send_message(s.chat_id, (warn + "\n\n" if warn else "") + _choice_text(s), reply_markup=_choice_kb(s))
+
+
+def _voice_lines(texts):
+    return [t for t in (texts or []) if t]
+
+
+def _tts_line(t):
+    """Ovoz uchun qator: oxirida tinish belgisi bo'lmasa nuqta qo'yiladi — qatorlar orasida pauza aniq bo'lsin."""
+    t = t.strip()
+    return t if re.search(r"[.!?…:;,»\"')\]]$", t) else t + "."
+
+
+async def send_voice_text(s):
+    lines = [_tts_line(t) for t in _voice_lines(s.texts)]
+    if not lines:
+        return await D.bot.send_message(s.chat_id, "Matnda ovoz uchun qator yo‘q.")
+    chunks, cur = [], ""
+    for ln in lines:
+        if cur and len(cur) + len(ln) + 1 > 3500:
+            chunks.append(cur)
+            cur = ""
+        cur += ln + "\n"
+    if cur:
+        chunks.append(cur)
+    await D.bot.send_message(
+        s.chat_id, f"📋 <b>Ovoz uchun matn</b> ({len(lines)} qator, tartib bilan). Bosib nusxa oling, Blox lab'ga "
+                   "tashlab ovozga aylantiring va tayyor audioni shu yerga yuboring.")
+    for ch in chunks:
+        await D.bot.send_message(s.chat_id, f"<pre>{esc(ch.strip())}</pre>")
 
 
 # ---------------------------------------------------------------- yasash
@@ -448,44 +543,165 @@ async def pick_music(s, other=False):
         return None
 
 
-async def render(s):
+async def render(s, durs=None, st=None, prev=None):
+    """Panellardan video yasaydi. durs — ovozli videoda har panel davomiyligi (bo'lmasa — ovozsiz video)."""
+    prev = prev or ("done" if s.out else "texts")
     s.state = "busy"
     mark(s)
-    st = await D.bot.send_message(s.chat_id, f"🎞 Video yasalmoqda… (0/{len(s.panels)})")
+    if durs is None:
+        s.voice_wav = None
+    head = "🎞 Video yasalmoqda…"
+    if st is None:
+        st = await D.bot.send_message(s.chat_id, f"{head} (0/{len(s.panels)})")
+    else:
+        await _st(st, f"{head} (0/{len(s.panels)})")
     try:
         async def prog(i, n):
-            try:
-                await st.edit_text(f"🎞 Video yasalmoqda… ({i}/{n})")
-            except Exception:
-                pass
+            await _st(st, f"{head} ({i}/{n})")
 
         async with D.heavy:
-            s.silent, s.total = await manga.render_video(s.panels, s.texts or [], s.dir, prog)
+            if s.infos is None or len(s.infos) != len(s.panels):
+                s.infos = await manga.prepare_all(s.panels, s.dir)
+            s.silent, s.total = await manga.render_video(s.panels, s.texts or [], s.dir, prog, durs=durs,
+                                                         infos=s.infos)
         await finish(s, st)
     except asyncio.CancelledError:
         raise
     except Exception as e:
         log.exception("manga render xato")
-        s.state = "texts"
-        await st.edit_text(f"❌ Video yasashda xatolik: {esc(D.short_err(e))}\nMatnni qayta yuborib ko‘ring.")
+        s.state = prev
+        await _st(st, f"❌ Video yasashda xatolik: {esc(D.short_err(e))}\nQayta urinib ko‘ring.")
+
+
+async def voice_segments(s, audio_path, lines, anchors=None, st=None):
+    """Aytilgan qatorlarning ovozdagi (boshlanish, tugash) vaqtlari. Qaytaradi (segs, balandlik_dB)."""
+    wav = os.path.join(s.dir, "voice16.wav")
+    await video.voice_to_wav(audio_path, wav)
+    vs, ve, pauses, level = await asyncio.to_thread(video.speech_layout, wav)
+    weights = [video.text_weight(t) for t in lines]
+    segs = None
+    if anchors:
+        segs = video.bounds_from_anchors(vs, ve, anchors, weights, pauses)
+        if segs:
+            log.info("manga ovoz: ElevenLabs vaqtlari ishlatildi")
+    if not segs and len(lines) > 1 and D.gem is not None and D.gemini is not None:
+        if st:
+            await _st(st, "🎧 Har bir qator ovozda qayerda boshlanishi aniqlanmoqda…")
+        try:
+            amp3 = os.path.join(s.dir, "voice_align.mp3")
+            await video.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", wav, "-c:a", "libmp3lame", "-b:a",
+                             "48k", amp3], timeout=300)
+            anc = await D.gemini.align_voice(D.gem, D.http(), amp3, lines)
+            segs = video.bounds_from_anchors(vs, ve, anc, weights, pauses)
+            log.info("manga ovoz moslash: %d/%d qator topildi", len(anc), len(lines))
+        except Exception as e:
+            log.warning("manga: ovozni Gemini bilan moslab bo'lmadi: %r", e)
+    if not segs:
+        segs = video.sentence_bounds(vs, ve, pauses, weights)
+    return manga.snap_into_pauses(segs, pauses), level
+
+
+async def voice_render(s, audio_path, st, source, anchors=None):
+    """Ovoz bilan video: qatorlarni ovozga moslab, har panel o'z gapi davomida turadi."""
+    prev = "done" if s.out else "texts"
+    s.state = "busy"
+    mark(s)
+    try:
+        lines = _voice_lines(s.texts)
+        if not lines:
+            s.state = prev
+            return await _st(st, "Matnda ovoz uchun qator yo‘q — avval matn yuboring.")
+        await _st(st, "🎧 Ovoz tahlil qilinmoqda…")
+        segs, level = await voice_segments(s, audio_path, lines, anchors, st)
+        if s.infos is None or len(s.infos) != len(s.panels):
+            await _st(st, "🖼 Kadrlar tayyorlanmoqda…")
+            async with D.heavy:
+                s.infos = await manga.prepare_all(s.panels, s.dir)
+        durs, pieces = manga.plan_voice(s.texts, segs, [manga.min_duration(i) for i in s.infos])
+        vw = os.path.join(s.dir, "voice_track.wav")
+        await manga.build_voice_track(audio_path, durs, pieces, vw, s.dir)
+        s.voice_wav, s.voice_level, s.voice_name = vw, level, source
+        await render(s, durs=durs, st=st, prev=prev)
+    except asyncio.CancelledError:
+        raise
+    except ValueError as e:          # ovozda nutq topilmadi / juda qisqa
+        s.state = prev
+        mark(s)
+        await _st(st, f"❌ {esc(str(e))}. Boshqa audio yuborib ko‘ring.")
+    except Exception as e:
+        log.exception("manga ovozli video xato")
+        s.state = prev
+        mark(s)
+        await _st(st, f"❌ Ovozli video yasalmadi: {esc(D.short_err(e))}")
+
+
+async def eleven_render(s):
+    """ElevenLabs bilan matnni o'qitib, ovozli video yasaydi."""
+    prev = "done" if s.out else "texts"
+    s.state = "busy"
+    st = await D.bot.send_message(s.chat_id, "🤖 ElevenLabs matnni o‘qiyapti…")
+    try:
+        lines = [_tts_line(t) for t in _voice_lines(s.texts)]
+        lib = await D.music.load(D.bot, s.chat_id, D.work_dir)
+        vid = lib.get("ovoz") or D.eleven.VOICES[0][1]
+        name = D.eleven.voice_name(vid)
+        chunks, cur, size = [], [], 0
+        for ln in lines:                  # ElevenLabs bir so'rovda ~4800 belgigacha oladi
+            if cur and size + len(ln) + 2 > 4500:
+                chunks.append(cur)
+                cur, size = [], 0
+            cur.append(ln)
+            size += len(ln) + 2
+        if cur:
+            chunks.append(cur)
+        gap = 0.4
+        parts, anchors, offset, k = [], {}, 0.0, 0
+        for ci, ch in enumerate(chunks):
+            p = os.path.join(s.dir, f"eleven_{s.seq}_{ci}.mp3")
+            al = await D.eleven.tts(D.http(), D.eleven_key, vid, "\n\n".join(ch), p)
+            for j, t0 in D.eleven.sentence_starts(ch, al).items():
+                anchors[k + j] = offset + t0
+            offset += await video.audio_duration(p) + (gap if len(chunks) > 1 else 0.0)
+            k += len(ch)
+            parts.append(p)
+        audio = parts[0] if len(parts) == 1 else await video.concat_voice(
+            parts, os.path.join(s.dir, f"eleven_{s.seq}_all.ogg"), gap=gap)
+        left = await D.eleven.credits_left(D.http(), D.eleven_key)
+        await _st(st, f"✅ Ovoz tayyor: {esc(name)}" + (f". ElevenLabs krediti qoldi: {left:,}".replace(",", " ")
+                                                        if left is not None else ""))
+        s.state = prev
+        await voice_render(s, audio, st, f"ElevenLabs — {name}", anchors=anchors or None)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        s.state = prev
+        mark(s)
+        if isinstance(e, D.eleven.ElevenError):
+            log.warning("manga elevenlabs xato: %s %s %s", e.status, e.code, e)
+            txt = f"❌ ElevenLabs: {esc(D.eleven.friendly(e))}"
+        else:
+            log.exception("manga elevenlabs xato")
+            txt = f"❌ Ovoz yaratilmadi: {esc(D.short_err(e))}"
+        await _st(st, txt + "\n\n🎤 Blox lab yoki o‘z ovozingizni audio qilib yuborsangiz ham bo‘ladi.")
 
 
 async def finish(s, st=None, other=False):
-    """Qo'shiq qo'shib, tayyor videoni yuboradi."""
+    """Qo'shiq (va ovoz) qo'shib, tayyor videoni yuboradi."""
     s.state = "busy"
+    voiced = bool(s.voice_wav and os.path.exists(s.voice_wav))
     try:
         if st is None:
             st = await D.bot.send_message(s.chat_id, "🎵 Qo‘shiq almashtirilmoqda…")
         else:
-            try:
-                await st.edit_text("🎵 Qo‘shiq qo‘shilmoqda…")
-            except Exception:
-                pass
+            await _st(st, "🎵 Qo‘shiq qo‘shilmoqda…")
         mus = await pick_music(s, other=other)
         s.seq += 1
         out = os.path.join(s.dir, f"manga_{s.seq}.mp4")
         async with D.heavy:
-            await manga.mux_music(s.silent, out, s.total, mus)
+            if voiced:
+                await manga.mux_voice_music(s.silent, s.voice_wav, out, s.total, s.voice_level, mus)
+            else:
+                await manga.mux_music(s.silent, out, s.total, mus)
         if s.out and s.out != out and os.path.exists(s.out):
             try:
                 os.remove(s.out)
@@ -493,13 +709,21 @@ async def finish(s, st=None, other=False):
                 pass
         s.out = out
         note = f"✅ Manga-video tayyor ({fmt_sec(s.total)})\n🎞 Panellar: {len(s.panels)}"
+        if voiced:
+            note += f"\n🎙 Ovoz: {esc(s.voice_name)}"
         if mus:
             note += f"\n🎵 Qo‘shiq: {esc(mus['name'])}"
+        if not voiced:
+            note += "\n\n🎤 Ovozli qilish uchun audioni (Blox lab yoki o‘z ovozingiz) shu yerga yuboring."
         rows = []
         if mus:
             rows.append([("🎵 Boshqa qo‘shiq", "mg_mnext"), ("🔇 Qo‘shiqsiz", "mg_mnone")])
         elif s.no_music:
             rows.append([("🎵 Qo‘shiq qo‘shish", "mg_mback")])
+        if not voiced and D.eleven_key:
+            rows.append([("🎙 ElevenLabs bilan o‘qit", "mg_eleven")])
+        if not voiced:
+            rows.append([("📋 Ovoz uchun matn", "mg_copy")])
         rows.append([("🔄 Matnni o‘zgartirish", "mg_again")])
         if os.path.getsize(out) > 49 * 1024 * 1024 and D.big is not None:
             await D.big.send_video(s.chat_id, out, s.total, manga.W, manga.H, hint_msg_id=s.last_user_mid)
@@ -521,10 +745,7 @@ async def finish(s, st=None, other=False):
         log.exception("manga finish xato")
         s.state = "done" if s.out else "texts"
         if st:
-            try:
-                await st.edit_text(f"❌ Video tayyorlashda xatolik: {esc(D.short_err(e))}")
-            except Exception:
-                pass
+            await _st(st, f"❌ Video tayyorlashda xatolik: {esc(D.short_err(e))}")
 
 
 # ---------------------------------------------------------------- tugmalar
@@ -543,6 +764,13 @@ async def on_cb(c: CallbackQuery):
     if not s:
         return await c.answer("Seans tugagan. /manga bilan boshlang.", show_alert=True)
     s.last = time.time()
+
+    async def unbutton():
+        try:
+            await c.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
     if act == "mg_done":
         if s.state != "pages":
             return await c.answer()
@@ -553,10 +781,7 @@ async def on_cb(c: CallbackQuery):
         await c.answer()
         if s.refresh_task and not s.refresh_task.done():
             s.refresh_task.cancel()
-        try:
-            await c.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        await unbutton()
         return await analyse(s)
     if act == "mg_rtl":
         if s.state != "texts":
@@ -568,23 +793,30 @@ async def on_cb(c: CallbackQuery):
         if s.state != "texts":
             return await c.answer()
         await c.answer()
-        try:
-            await c.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        await unbutton()
         if s.texts is None:
             s.texts = [""] * len(s.panels)
         return await render(s)
     if act == "mg_orig":
-        if s.state != "texts":
+        if s.state != "texts" or not s.orig:
             return await c.answer()
+        await c.answer("Asl matn qoldirildi")
+        await unbutton()
+        s.texts = s.orig
+        return await D.bot.send_message(s.chat_id, _choice_text(s), reply_markup=_choice_kb(s))
+    if act == "mg_copy":
+        if s.state not in ("texts", "done") or not _voice_lines(s.texts):
+            return await c.answer("Avval matnni yuboring.", show_alert=True)
         await c.answer()
-        try:
-            await c.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-        s.texts = s.orig or s.texts
-        return await render(s)
+        return await send_voice_text(s)
+    if act == "mg_eleven":
+        if s.state not in ("texts", "done") or not _voice_lines(s.texts):
+            return await c.answer("Avval matnni yuboring.", show_alert=True)
+        if not D.eleven_key:
+            return await c.answer("ElevenLabs ulanmagan.", show_alert=True)
+        await c.answer()
+        await unbutton()
+        return await eleven_render(s)
     if act in ("mg_mnext", "mg_mnone", "mg_mback"):
         if s.state != "done" or not s.silent or not os.path.exists(s.silent):
             return await c.answer("Hozir bu mumkin emas.", show_alert=True)
@@ -600,6 +832,8 @@ async def on_cb(c: CallbackQuery):
         await c.answer()
         s.state = "texts"
         s.texts = None
+        s.voice_wav = None
+        mark(s)
         return await D.bot.send_message(
             s.chat_id, "Yangi matnni yuboring (har panel uchun bitta qator). "
                        f"Panellar soni: <b>{len(s.panels)}</b>.", reply_markup=_texts_kb(s))
@@ -617,6 +851,52 @@ async def on_wait_text(m: Message):
     raise SkipHandler()
 
 
+def _audio_of(m: Message):
+    """(file_id, hajm, kengaytma) — xabardagi audio; audio bo'lmasa None."""
+    if m.voice:
+        return m.voice.file_id, m.voice.file_size or 0, ".ogg"
+    if m.audio:
+        ext = os.path.splitext(m.audio.file_name or "")[1].lower() or ".mp3"
+        return m.audio.file_id, m.audio.file_size or 0, ext
+    doc = m.document
+    if doc and ((doc.mime_type or "").lower().startswith("audio/") or AUDIO_EXT.search(doc.file_name or "")):
+        ext = os.path.splitext(doc.file_name or "")[1].lower() or ".mp3"
+        return doc.file_id, doc.file_size or 0, ext
+    return None
+
+
+async def on_audio(m: Message):
+    """Ovoz (Blox lab, o'z ovozi va h.k.) — qatorlarni moslab, ovozli video yasaladi."""
+    s = SESS.get(m.from_user.id)
+    a = _audio_of(m) if s else None
+    if not a:
+        raise SkipHandler()
+    s.last = time.time()
+    if s.state == "pages":
+        return await m.answer("Avval sahifalarni yuborib «✅ Tugadi» ni bosing. Ovoz matndan keyin yuboriladi.")
+    if s.state == "busy":
+        return await m.answer("⏳ Hozir ishlayapman. Tugagach audioni qayta yuboring.")
+    if not _voice_lines(s.texts):
+        return await m.answer("Avval matnni yuboring (har panel uchun bitta qator), keyin ovozni.")
+    fid, size, ext = a
+    if size > MAX_FILE:
+        return await m.answer("Audio juda katta (200 MB gacha).")
+    if size > 20 * 1024 * 1024 and D.big is None:
+        return await m.answer("Bu audio 20 MB dan katta. Kichikroq (masalan, mp3) qilib yuboring.")
+    s.last_user_mid = m.message_id
+    path = os.path.join(s.dir, f"voice_in_{m.message_id}{ext}")
+    st = await m.answer("🎙 Ovoz qabul qilindi, yuklab olinmoqda…")
+    try:
+        if size > 20 * 1024 * 1024:
+            await D.big.download(m.message_id, path)
+        else:
+            await D.bot.download(fid, destination=path, timeout=300)
+    except Exception as e:
+        log.exception("manga audio yuklanmadi")
+        return await _st(st, f"❌ Audio olinmadi: {esc(D.short_err(e))}")
+    await voice_render(s, path, st, "sizning audiongiz")
+
+
 async def cmd_cancel(m: Message):
     drop(m.from_user.id)
     await m.answer("❌ Manga-video bekor qilindi. Yangisi uchun /manga")
@@ -627,7 +907,9 @@ def setup(**deps):
     global D
 
     class _D:
-        pass
+        eleven = None
+        gemini = None
+        eleven_key = ""
 
     D = _D()
     for k, v in deps.items():
@@ -641,6 +923,7 @@ def setup(**deps):
 
     dp.message.register(cmd_cancel, Command("bekor"), _bekor_filter)
     dp.message.register(on_page, F.photo | F.document, _is_state("pages"))
+    dp.message.register(on_audio, F.audio | F.voice | F.document, _bekor_filter)
     dp.message.register(on_text, F.text, ~F.text.startswith("/"), _is_state("texts"))
     dp.message.register(on_wait_text, F.text, ~F.text.startswith("/"))
     dp.callback_query.register(on_cb, F.data.startswith("mg_"))

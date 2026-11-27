@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import re
+import wave
 import zipfile
 
 import numpy as np
@@ -32,6 +33,8 @@ SEC_PER_CHAR = float(os.environ.get("MANGA_SEC_PER_CHAR", "0.075"))
 NO_TEXT_SEC = float(os.environ.get("MANGA_NO_TEXT_SEC", "1.8"))  # matnsiz panel
 MAX_SEC = 9.0
 PAN_SPEED = float(os.environ.get("MANGA_PAN_SPEED", "260"))      # uzun panel pastga surilish tezligi (px/s)
+VOICE_GAP_SEC = float(os.environ.get("MANGA_VOICE_GAP", "1.3"))   # ovozli videoda matnsiz panel
+VOICE_TAIL_SEC = 0.8                                                # ovozli video oxirida biroz jimlik
 ZOOM = 0.07                                                      # sekin yaqinlashish miqdori
 MAX_PANELS = int(os.environ.get("MANGA_MAX_PANELS", "200"))
 CRF = os.environ.get("MANGA_CRF", "21")
@@ -715,15 +718,33 @@ async def mux_music(video_in, out, total, music=None, target=-14.0):
         await mux(max(-10.0, min(14.0, target - lufs)))
 
 
-async def render_video(panels, texts, workdir, on_progress=None):
-    """Panellar + matnlar → ovozsiz video (concat). Qaytaradi (yo'l, jami soniya)."""
+def min_duration(info):
+    """Ovozli videoda panel eng kamida qancha turishi kerak (uzun panel juda tez surilib ketmasin)."""
+    if info["mode"] == "pan":
+        return info["travel"] / (2.0 * PAN_SPEED) + 0.6
+    return 0.9
+
+
+async def prepare_all(panels, workdir):
+    """Har panel uchun asosiy kadr (b_XXX.jpg). Qaytaradi: infos ro'yxati."""
     cdir = os.path.join(workdir, "clips")
     os.makedirs(cdir, exist_ok=True)
-    infos, durs = [], []
+    infos = []
     for i, p in enumerate(panels):
-        info = await asyncio.to_thread(prepare_clip, p["path"], os.path.join(cdir, f"b_{i:03d}.jpg"))
-        infos.append(info)
-        durs.append(clip_duration(texts[i] if i < len(texts) else "", info))
+        infos.append(await asyncio.to_thread(prepare_clip, p["path"], os.path.join(cdir, f"b_{i:03d}.jpg")))
+    return infos
+
+
+async def render_video(panels, texts, workdir, on_progress=None, durs=None, infos=None):
+    """Panellar + matnlar → ovozsiz video (concat). Qaytaradi (yo'l, jami soniya).
+    durs — har panel davomiyligi (ovozli videoda ovozga qarab); bo'lmasa matn uzunligidan hisoblanadi.
+    infos — prepare_all natijasi (qayta hisoblamaslik uchun)."""
+    cdir = os.path.join(workdir, "clips")
+    os.makedirs(cdir, exist_ok=True)
+    if infos is None or len(infos) != len(panels):
+        infos = await prepare_all(panels, workdir)
+    if durs is None:
+        durs = [clip_duration(texts[i] if i < len(texts) else "", infos[i]) for i in range(len(panels))]
     total = sum(durs)
     mr = video.video_maxrate(total)
     files = []
@@ -738,3 +759,116 @@ async def render_video(panels, texts, workdir, on_progress=None):
     silent = os.path.join(workdir, "manga_silent.mp4")
     await concat_clips(files, silent)
     return silent, total
+
+
+# ---------------------------------------------------------------- ovoz
+
+def snap_into_pauses(segs, pauses, lead=0.15):
+    """Qatorlar chegarasini pauza ichiga suradi (keyingi gap boshlanishidan ~0.15 s oldin) — so'z boshi kesilib,
+    oldingi panelga o'tib qolmasin."""
+    if len(segs) < 2:
+        return segs
+    edges = [segs[0][0]] + [b for _, b in segs]
+    for i in range(1, len(edges) - 1):
+        b = edges[i]
+        for ps, pe in pauses:
+            if ps - 0.02 <= b <= pe + 0.08:
+                if pe - ps > 0.04:
+                    nb = max(ps + 0.5 * (pe - ps), pe - lead)
+                    if edges[i - 1] + 0.3 < nb < edges[i + 1] - 0.3:
+                        edges[i] = nb
+                break
+    return [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
+
+
+def plan_voice(texts, segs, min_durs):
+    """Ovozli video rejasi. texts — panel matnlari; segs — aytilgan (bo'sh bo'lmagan) qatorlarning ovozdagi
+    (boshlanish, tugash) vaqtlari, tartib bilan; min_durs — har panel uchun eng kam davomiylik.
+    Qaytaradi (durs, pieces): pieces[i] = (a, b) — panel ostida ovozning shu qismi, None — jimlik."""
+    durs, pieces, k = [], [], 0
+    for i, t in enumerate(texts):
+        if t and k < len(segs):
+            a, b = segs[k]
+            k += 1
+            durs.append(max(b - a, min_durs[i]))
+            pieces.append((a, b))
+        else:
+            durs.append(max(VOICE_GAP_SEC, min_durs[i]))
+            pieces.append(None)
+    if durs:
+        durs[-1] += VOICE_TAIL_SEC
+    return durs, pieces
+
+
+async def build_voice_track(src_audio, durs, pieces, out_wav, workdir, sr=44100):
+    """Panellar tartibida ovoz yo'lagi: har panel ostiga ovozning o'z qismi (qolgani jimlik). Qaytaradi out_wav."""
+    hq = os.path.join(workdir, "voice_hq.wav")
+    await video.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", src_audio, "-vn", "-ac", "1", "-ar", str(sr),
+                     "-c:a", "pcm_s16le", hq], timeout=600)
+
+    def build():
+        with wave.open(hq) as w:
+            x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+        parts = []
+        fade = int(0.012 * sr)
+        for d, pc in zip(durs, pieces):
+            n = int(round(d * sr))
+            buf = np.zeros(n, dtype=np.int16)
+            if pc is not None:
+                a, b = int(round(pc[0] * sr)), int(round(pc[1] * sr))
+                seg = x[max(0, a):max(0, min(len(x), b))].astype(np.float32)
+                m = min(len(seg), n)
+                seg = seg[:m]
+                if m > 2 * fade:          # chegaralarda «chiq» eshitilmasin
+                    ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+                    seg[:fade] *= ramp
+                    seg[-fade:] *= ramp[::-1]
+                buf[:m] = seg.astype(np.int16)
+            parts.append(buf)
+        y = np.concatenate(parts) if parts else np.zeros(1, dtype=np.int16)
+        with wave.open(out_wav, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes(y.tobytes())
+
+    await asyncio.to_thread(build)
+    try:
+        os.remove(hq)
+    except OSError:
+        pass
+    return out_wav
+
+
+async def mux_voice_music(video_in, voice_wav, out, total, voice_db=-20.0, music=None, target=-14.0):
+    """Video + ovoz (baland, aniq) + qo'shiq (orqada past; gapirganda yana pasayadi). Video nusxalanadi.
+    music: {"path", "start", "rms"}. Umumiy balandlik ≈ −14 LUFS."""
+    total = float(total)
+    gain = max(-12.0, min(24.0, -15.0 - float(voice_db)))
+
+    async def mux(extra):
+        fc = (f"[1:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,highpass=f=70,"
+              f"volume={gain:.1f}dB,acompressor=threshold=0.08:ratio=3:attack=8:release=200:makeup=2,"
+              f"apad=whole_dur={total:.3f}")
+        if music:
+            mg = max(-40.0, min(10.0, -29.0 - float(music.get("rms", -20.0))))
+            fc += (",asplit=2[vo][sc];"
+                   f"[2:a]atrim=start={float(music.get('start', 0)):.2f},asetpts=PTS-STARTPTS,aresample=44100,"
+                   f"aformat=sample_fmts=fltp:channel_layouts=stereo,volume={mg:.1f}dB,"
+                   f"afade=t=in:st=0:d=1.2,afade=t=out:st={max(0.0, total - 2.5):.2f}:d=2.5,atrim=end={total:.3f}[mu0];"
+                   "[mu0][sc]sidechaincompress=threshold=0.05:ratio=3:attack=30:release=500[mua];"
+                   "[vo][mua]amix=inputs=2:duration=first:normalize=0,")
+        else:
+            fc += ","
+        fc += f"volume={extra:.1f}dB,alimiter=limit=0.84:attack=5:release=60:level=false[a]"
+        cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", video_in, "-i", voice_wav]
+        if music:
+            cmd += ["-stream_loop", "-1", "-i", music["path"]]
+        cmd += ["-filter_complex", fc, "-map", "0:v:0", "-map", "[a]", "-t", f"{total:.3f}", "-c:v", "copy",
+                "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-movflags", "+faststart", out]
+        await video.run(cmd, timeout=1800)
+
+    await mux(0.0)
+    lufs = await video.measure_lufs(out)
+    if lufs is not None and abs(lufs - target) > 1.0:
+        await mux(max(-10.0, min(14.0, target - lufs)))

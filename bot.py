@@ -1178,7 +1178,8 @@ async def tts_job(job):
 
 # Manga-video (/manga): handlerlari kino oqimidan OLDIN ro'yxatdan o'tadi, lekin faqat /manga seansi ochiq bo'lsagina ishlaydi
 mangabot.setup(bot=bot, dp=dp, allowed=allowed, short_err=short_err, work_dir=WORK_DIR, music_dir=MUSIC_DIR,
-               music=music, gem=gem, http=lambda: HTTP, heavy=HEAVY, big=BIG)
+               music=music, gem=gem, http=lambda: HTTP, heavy=HEAVY, big=BIG,
+               eleven=eleven, gemini=gemini, eleven_key=ELEVEN_KEY)
 
 WELCOME = (
     "Salom! 🎬 Men kinodan 1 daqiqalik qisqa hikoya-video yasayman.\n\n"
