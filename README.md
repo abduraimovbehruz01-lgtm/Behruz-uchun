@@ -41,7 +41,7 @@ Manga yoki webtoon sahifalaridan, o‘zingiz yozgan o‘zbekcha matn bilan verti
 5. Tugmalar: «🎵 Boshqa qo‘shiq», «🔇 Qo‘shiqsiz», «🔄 Matnni o‘zgartirish». Panellar teskari tartibda chiqsa (yapon manga), tugma bilan o‘qish yo‘nalishini almashtiring.
 
 Sozlamalar (ixtiyoriy): `MANGA_BADGE` (yuqoridagi yozuv, standart `MANHORA`), `MANGA_FPS` (24), `MANGA_W` (720), `MANGA_MIN_SEC` (2.2), `MANGA_SEC_PER_CHAR` (0.075), `MANGA_MAX_PANELS` (200).
-PDF sahifalari rasmga aylantiriladi (eni 1080 px, 300 sahifagacha). Seans xotirada turadi: server qayta ishga tushsa, `/manga` dan boshlanadi.
+PDF sahifalari rasmga aylantiriladi (300 sahifagacha). Juda uzun sahifalar (webtoon) va uzun rasmlar bo‘laklab o‘qiladi (bepul serverda xotira yetishi uchun), juda baland panel bir necha bo‘lakka bo‘linadi. Seans xotirada turadi: server qayta ishga tushsa, `/manga` dan boshlanadi.
 
 ## Sozlamalar (Render → Environment)
 

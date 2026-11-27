@@ -9,6 +9,7 @@ Qismlar:
 """
 import asyncio
 import logging
+import math
 import os
 import re
 import zipfile
@@ -39,6 +40,14 @@ AW = 480        # tahlil uchun sahifa eni (piksel)
 SS = 2          # kadr sifati: zoom uchun 2x kattalikda tayyorlanadi
 
 IMG_EXT = re.compile(r"\.(jpe?g|png|webp|bmp|gif|tiff?)$", re.I)
+PDF_W = 1080                                                         # PDF sahifalari shu enga keltiriladi
+SLICE_AT = int(os.environ.get("MANGA_SLICE_AT", "9000"))             # eni 1080 da shundan baland bo'lsa — bo'linadi
+PDF_AREA = float(os.environ.get("MANGA_PDF_AREA", "24")) * 1e6     # uzun sahifa shu maydondan (px) oshmaydigan enda
+PDF_MIN_W = 600                                                      # uzun sahifa eni bundan kichik qilinmaydi
+SLICE_AREA = 6e6                                                     # bitta bo'lak maydoni (px)
+ROW_BUDGET = int(os.environ.get("MANGA_ROW_BUDGET", "120000"))       # bitta PDF: tahlil qatorlari chegarasi
+MAX_RATIO = float(os.environ.get("MANGA_MAX_RATIO", "4.5"))          # bo'yi enidan shuncha marta katta panel bo'linadi
+PIECE_RATIO = 3.0                                                    # bo'lingan panel bo'lagining taxminiy nisbati
 
 
 # ---------------------------------------------------------------- fayllar
@@ -68,28 +77,168 @@ def extract_zip(zip_path, outdir):
     return res
 
 
-def pdf_to_images(pdf_path, outdir, max_pages=300):
-    """PDF sahifalarini rasmga aylantiradi (poppler: pdftoppm), eni 1080 px. Qaytaradi: rasmlar ro'yxati."""
+def _pdf_sizes(pdf_path, max_pages):
+    """[(sahifa, eni_pt, bo'yi_pt)] — CropBox bo'yicha, aylantirish hisobga olingan. O'qib bo'lmasa None."""
     import subprocess
-    os.makedirs(outdir, exist_ok=True)
-    prefix = os.path.join(outdir, "pg")
-    r = subprocess.run(["pdftoppm", "-jpeg", "-jpegopt", "quality=90", "-scale-to-x", "1080", "-scale-to-y", "-1",
-                        "-l", str(max_pages), pdf_path, prefix], capture_output=True, text=True, timeout=900)
+    try:
+        r = subprocess.run(["pdfinfo", "-box", "-f", "1", "-l", str(max_pages), pdf_path],
+                           capture_output=True, text=True, timeout=180)
+    except Exception:
+        return None
     if r.returncode != 0:
-        raise RuntimeError("PDF o'qilmadi: " + (r.stderr or "").strip()[:200])
-    return sorted((os.path.join(outdir, f) for f in os.listdir(outdir) if f.startswith("pg") and f.endswith(".jpg")),
-                  key=natural_key)
+        return None
+    crop, rot = {}, {}
+    for line in r.stdout.splitlines():
+        mc = re.match(r"Page\s+(\d+)\s+CropBox:\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)", line)
+        if mc:
+            x0, y0, x1, y1 = (float(v) for v in mc.group(2, 3, 4, 5))
+            crop[int(mc.group(1))] = (abs(x1 - x0), abs(y1 - y0))
+            continue
+        mr = re.match(r"Page\s+(\d+)\s+rot:\s+(-?\d+)", line)
+        if mr:
+            rot[int(mr.group(1))] = int(mr.group(2)) % 360
+    out = []
+    for p in sorted(crop):
+        w, h = crop[p]
+        if rot.get(p, 0) in (90, 270):
+            w, h = h, w
+        if w > 0 and h > 0:
+            out.append((p, w, h))
+    return out or None
+
+
+def _pdftoppm(args, width, timeout=600):
+    import subprocess
+    r = subprocess.run(["pdftoppm", "-jpeg", "-jpegopt", "quality=90", "-cropbox", "-scale-to-x", str(width),
+                        "-scale-to-y", "-1", *args], capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0:
+        err = (r.stderr or "").strip()
+        log.warning("pdftoppm xato: %s", err[-500:])
+        if "password" in err.lower():
+            raise RuntimeError("PDF parol bilan himoyalangan — parolsiz nusxasini yuboring")
+        raise RuntimeError("PDF o‘qilmadi (fayl buzilgan yoki noto‘g‘ri formatda)")
+
+
+def pdf_to_images(pdf_path, outdir, max_pages=300):
+    """PDF sahifalarini rasmga aylantiradi (poppler). Oddiy sahifalar eni 1080 px.
+    Juda uzun sahifa (webtoon) bo'lsa: JPEG 65 500 px dan baland bo'lolmaydi, poppler esa rasmni butun bo'yicha
+    xotirada kattalashtiradi — shuning uchun en kichikroq tanlanadi (maydon ~24 Mpx, eni kamida 600 px) va sahifa
+    bo'laklab chiziladi. Webtoon bo'laklari keyin ulanishi uchun bunday PDF ning hamma sahifalari bir xil enda.
+    Qaytaradi: (rasmlar ro'yxati, foydalanuvchiga eslatma yoki None)."""
+    os.makedirs(outdir, exist_ok=True)
+    sizes = _pdf_sizes(pdf_path, max_pages)
+    if not sizes:      # o'lchamlarni bilib bo'lmadi — oddiy usul
+        _pdftoppm(["-l", str(max_pages), pdf_path, os.path.join(outdir, "pg")], PDF_W, timeout=900)
+        files = [os.path.join(outdir, f) for f in os.listdir(outdir) if f.startswith("pg") and f.endswith(".jpg")]
+        return sorted(files, key=natural_key), None
+    width = PDF_W
+    for _p, w, h in sizes:
+        if PDF_W * h / w > SLICE_AT:
+            width = min(width, max(PDF_MIN_W, int(math.sqrt(PDF_AREA * w / h))))
+    slice_h = int(max(2000, min(SLICE_AT, SLICE_AREA // width)))
+    rows, note, run = 0.0, None, []
+
+    def flush():       # ketma-ket oddiy sahifalar — bitta chaqiruvda
+        if not run:
+            return
+        p0, p1 = run[0], run[-1]
+        _pdftoppm(["-f", str(p0), "-l", str(p1), pdf_path, os.path.join(outdir, f"r{p0}")], width)
+        for f in os.listdir(outdir):
+            m = re.fullmatch(rf"r{p0}-(\d+)\.jpg", f)
+            if m:
+                os.replace(os.path.join(outdir, f), os.path.join(outdir, f"{int(m.group(1)):04d}_00.jpg"))
+        run.clear()
+
+    for p, w, h in sizes:
+        ph = int(math.ceil(h * width / w - 1e-6))
+        r = ph * AW / width
+        if rows + r > ROW_BUDGET and rows > 0:
+            note = (f"⚠️ PDF juda uzun: dastlabki {p - 1} ta sahifa olindi. "
+                    f"Qolgan {sizes[-1][0] - p + 1} tasidan video kerak bo‘lsa, alohida yuboring.")
+            break
+        rows += r
+        if ph <= SLICE_AT:
+            if run and run[-1] != p - 1:
+                flush()
+            run.append(p)
+            continue
+        flush()
+        n = int(math.ceil(ph / slice_h))
+        step = int(math.ceil(ph / n))
+        for k in range(n):
+            y = k * step
+            hh = min(step, ph - y)
+            if hh < 4:
+                continue
+            _pdftoppm(["-f", str(p), "-l", str(p), "-singlefile", "-x", "0", "-y", str(y), "-W", str(width),
+                       "-H", str(hh), pdf_path, os.path.join(outdir, f"{p:04d}_{k:02d}")], width, timeout=300)
+    flush()
+    files = [os.path.join(outdir, f) for f in os.listdir(outdir) if re.fullmatch(r"\d{4}_\d{2}\.jpg", f)]
+    return sorted(files, key=natural_key), note
+
+
+def slice_tall(path):
+    """Juda uzun rasmni (webtoon tasmasi) bo'laklarga bo'ladi (har biri ~6 Mpx). Qaytaradi: yo'llar ro'yxati.
+    Rasm bir marta ochiladi, ortiqcha nusxalarsiz — bepul serverda xotira kam."""
+    try:
+        im = Image.open(path)
+        w, h = im.size
+        orient = im.getexif().get(0x0112, 1)
+    except Exception:
+        return [path]
+    if orient in (5, 6, 7, 8):
+        w, h = h, w
+    if w < 8 or h * min(PDF_W, w) / w <= SLICE_AT:
+        im.close()
+        return [path]
+    if im.format == "JPEG":
+        while im.size[0] * im.size[1] > 60e6:          # juda katta JPEG — kichraytirib o'qiladi
+            im.draft("RGB", (max(1, im.size[0] // 2), max(1, im.size[1] // 2)))
+            if im.size[0] * im.size[1] > 60e6 and im.size[0] < 16:
+                break
+    elif w * h * max(1, len(im.getbands())) > 130e6:
+        im.close()
+        raise ValueError(f"rasm juda katta ({w}×{h}). Uni bir nechta qismga bo‘lib yuboring")
+    if orient != 1:
+        im = ImageOps.exif_transpose(im)
+    im.load()
+    width, height = im.size
+    out_w = min(PDF_W, width)
+    piece_h = int(max(2000, min(SLICE_AT, SLICE_AREA // max(1, out_w)))) * width // out_w
+    n = int(math.ceil(height / piece_h))
+    step = int(math.ceil(height / n))
+    base = os.path.splitext(path)[0]
+    out = []
+    for k in range(n):
+        piece = _to_rgb(im.crop((0, k * step, width, min(height, (k + 1) * step))))
+        if piece.width > out_w:
+            piece = piece.resize((out_w, max(1, round(piece.height * out_w / piece.width))), Image.LANCZOS)
+        q = f"{base}_s{k:02d}.jpg"
+        piece.save(q, "JPEG", quality=92)
+        out.append(q)
+        del piece
+    im.close()
+    del im
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return out
+
+
+def _to_rgb(im):
+    if im.mode in ("RGBA", "LA", "P", "PA"):
+        im = im.convert("RGBA")
+        bg = Image.new("RGB", im.size, (255, 255, 255))
+        bg.paste(im, mask=im.split()[-1])
+        return bg
+    return im if im.mode == "RGB" else im.convert("RGB")
 
 
 def _open_rgb(path):
     im = Image.open(path)
     im = ImageOps.exif_transpose(im)
-    if im.mode in ("RGBA", "LA", "P"):
-        im = im.convert("RGBA")
-        bg = Image.new("RGB", im.size, (255, 255, 255))
-        bg.paste(im, mask=im.split()[-1])
-        return bg
-    return im.convert("RGB")
+    return _to_rgb(im)
 
 
 # ---------------------------------------------------------------- panellarni topish
@@ -114,12 +263,73 @@ def _gray_small(path):
     return np.asarray(g, dtype=np.uint8), ow, oh
 
 
-def _flat_lines(a, axis):
-    """Har qator (axis=1) yoki ustun (axis=0) bo'yicha: yassi (oq/qora fon, ya'ni bo'sh oraliq) bo'lsa True."""
-    f = a.astype(np.float32)
-    std = f.std(axis=axis)
-    mean = f.mean(axis=axis)
+def _flat_lines(a, axis, chunk=2048):
+    """Har qator (axis=1) yoki ustun (axis=0) bo'yicha: yassi (oq/qora fon, ya'ni bo'sh oraliq) bo'lsa True.
+    Bo'laklab hisoblanadi — juda uzun webtoon varag'ida ham xotira kam ketadi."""
+    if axis == 1:
+        out = np.empty(a.shape[0], dtype=bool)
+        for i in range(0, a.shape[0], chunk):
+            f = a[i:i + chunk].astype(np.float32)
+            std, mean = f.std(axis=1), f.mean(axis=1)
+            out[i:i + chunk] = (std < 6.0) & ((mean > 228) | (mean < 40))
+        return out
+    n = max(1, a.shape[0])
+    s1 = np.zeros(a.shape[1], dtype=np.float64)
+    s2 = np.zeros(a.shape[1], dtype=np.float64)
+    for i in range(0, a.shape[0], chunk):
+        f = a[i:i + chunk].astype(np.float64)
+        s1 += f.sum(axis=0)
+        s2 += (f * f).sum(axis=0)
+    mean = s1 / n
+    std = np.sqrt(np.maximum(0.0, s2 / n - mean * mean))
     return (std < 6.0) & ((mean > 228) | (mean < 40))
+
+
+def _row_std(a, chunk=2048):
+    out = np.empty(a.shape[0], dtype=np.float32)
+    for i in range(0, a.shape[0], chunk):
+        out[i:i + chunk] = a[i:i + chunk].astype(np.float32).std(axis=1)
+    return out
+
+
+def _block_std(a, chunk=2048):
+    n = a.size
+    if n == 0:
+        return 0.0
+    s1 = s2 = 0.0
+    for i in range(0, a.shape[0], chunk):
+        f = a[i:i + chunk].astype(np.float64)
+        s1 += float(f.sum())
+        s2 += float((f * f).sum())
+    m = s1 / n
+    return math.sqrt(max(0.0, s2 / n - m * m))
+
+
+def _split_tall(a, box):
+    """Juda baland panelni (oraliqsiz uzun rasm) bir nechta bo'lakka bo'ladi: kesish chizig'i iloji boricha
+    «tinch» (kam chiziqli) qatorga tushadi. Video uchun ham, xotira uchun ham kerak."""
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= MAX_RATIO * w:
+        return [box]
+    n = int(math.ceil(h / (PIECE_RATIO * w)))
+    step = h / n
+    busy = _row_std(a[y0:y1, x0:x1])
+    if busy.size >= 5:
+        busy = np.convolve(busy, np.ones(5, dtype=np.float32) / 5, mode="same")
+    cuts = [0]
+    for i in range(1, n):
+        ideal = int(i * step)
+        lo = max(cuts[-1] + int(0.5 * step), ideal - int(0.3 * step))
+        hi = min(h - int(0.5 * step), ideal + int(0.3 * step))
+        if hi - lo < 2:
+            cuts.append(ideal)
+            continue
+        rows = np.arange(lo, hi)
+        score = busy[lo:hi] + 4.0 * np.abs(rows - ideal) / step
+        cuts.append(int(lo + int(np.argmin(score))))
+    cuts.append(h)
+    return [(x0, y0 + cuts[i], x1, y0 + cuts[i + 1]) for i in range(n) if cuts[i + 1] - cuts[i] > 4]
 
 
 def _segments(flags, min_gap, min_seg):
@@ -195,7 +405,7 @@ _IMG_CACHE = {}
 def _cached_rgb(path):
     im = _IMG_CACHE.get(path)
     if im is None:
-        if len(_IMG_CACHE) >= 3:
+        if len(_IMG_CACHE) >= 2:
             _IMG_CACHE.pop(next(iter(_IMG_CACHE)))
         im = _IMG_CACHE[path] = _open_rgb(path)
     return im
@@ -229,9 +439,10 @@ def _edge_flat(g):
     return top, bot
 
 
-def build_sheets(pages):
-    """Sahifalarni varaqlarga ajratadi: sahifalar chegarasida rasm uzilmasdan davom etsa (webtoon) — ulanadi."""
-    sheets, prev = [], None
+def iter_sheets(pages):
+    """Sahifalarni varaqlarga ajratadi: sahifalar chegarasida rasm uzilmasdan davom etsa (webtoon) — ulanadi.
+    Varaqlar birma-bir qaytariladi — xotirada bir vaqtda faqat bittasi turadi."""
+    cur, prev = None, None
     for path in pages:
         try:
             g, ow, oh = _gray_small(path)
@@ -239,13 +450,20 @@ def build_sheets(pages):
             log.warning("sahifa o'qilmadi %s: %r", path, e)
             continue
         top, bot = _edge_flat(g)
-        join = (prev is not None and not prev["bot"] and not top
+        join = (prev is not None and cur is not None and not prev["bot"] and not top
                 and abs(ow - prev["ow"]) <= 0.05 * max(ow, prev["ow"]))
         if not join:
-            sheets.append(_Sheet())
-        sheets[-1].add(path, g, ow, oh)
+            if cur is not None:
+                yield cur
+            cur = _Sheet()
+        cur.add(path, g, ow, oh)
         prev = {"bot": bot, "ow": ow}
-    return sheets
+    if cur is not None:
+        yield cur
+
+
+def build_sheets(pages):
+    return list(iter_sheets(pages))
 
 
 def detect_panels(pages, outdir, rtl=False):
@@ -256,21 +474,24 @@ def detect_panels(pages, outdir, rtl=False):
         if f.startswith("p_") and f.endswith(".jpg"):
             os.remove(os.path.join(outdir, f))
     _IMG_CACHE.clear()
-    sheets = build_sheets(pages)
     res = []
-    for sh in sheets:
+    for sh in iter_sheets(pages):
+        if len(res) >= MAX_PANELS:
+            break
         a = sh.gray
+        sh.rows = [a]
         boxes = []
         _cut(a, (0, 0, a.shape[1], a.shape[0]), 0, rtl, boxes)
         keep = []
-        for (x0, y0, x1, y1) in boxes:
-            if (x1 - x0) < 40 or (y1 - y0) < 30:
-                continue
-            if float(a[y0:y1, x0:x1].std()) < 5.0:
-                continue
-            keep.append((x0, y0, x1, y1))
+        for box in boxes:
+            for (x0, y0, x1, y1) in _split_tall(a, box):
+                if (x1 - x0) < 40 or (y1 - y0) < 30:
+                    continue
+                if _block_std(a[y0:y1, x0:x1]) < 5.0:
+                    continue
+                keep.append((x0, y0, x1, y1))
         if not keep:
-            keep = [(0, 0, a.shape[1], a.shape[0])]
+            keep = [b for b in _split_tall(a, (0, 0, a.shape[1], a.shape[0])) if (b[3] - b[1]) > 4]
         for box in keep:
             if len(res) >= MAX_PANELS:
                 break
@@ -278,6 +499,7 @@ def detect_panels(pages, outdir, rtl=False):
             path = os.path.join(outdir, f"p_{len(res) + 1:03d}.jpg")
             im.save(path, "JPEG", quality=92)
             res.append({"path": path, "w": im.width, "h": im.height})
+        sh.rows = []
     _IMG_CACHE.clear()
     return res
 
@@ -399,6 +621,15 @@ def overlay_layer(text, out_path):
     return out_path
 
 
+def _cover(im, cw, ch, resample=Image.LANCZOS):
+    """Rasmni cw x ch kadrni to'liq qoplaydigan qilib (markazdan) kattalashtiradi — oraliq ulkan rasm yasamasdan."""
+    w, h = im.size
+    sc = max(cw / w, ch / h)
+    vw, vh = cw / sc, ch / sc
+    l, t = (w - vw) / 2, (h - vh) / 2
+    return im.resize((cw, ch), resample, box=(l, t, l + vw, t + vh))
+
+
 def prepare_clip(panel_path, base_path):
     """Panel uchun asosiy kadr tayyorlaydi. Qaytaradi {"mode": "zoom"|"pan", "travel": px}.
     zoom: xira fon + panel (yoki to'ldirib) — sekin yaqinlashadi; pan: uzun panel yuqoridan pastga suriladi."""
@@ -411,20 +642,14 @@ def prepare_clip(panel_path, base_path):
         return {"mode": "pan", "travel": im.height - H}
     cw, ch = W * SS, H * SS
     if sh >= 0.88 * H:      # deyarli butun kadrni to'ldiradi
-        sc = max(cw / w, ch / h)
-        big = im.resize((max(cw, round(w * sc)), max(ch, round(h * sc))), Image.LANCZOS)
-        l, t = (big.width - cw) // 2, (big.height - ch) // 2
-        frame = big.crop((l, t, l + cw, t + ch))
+        frame = _cover(im, cw, ch)
     else:                   # past/keng panel: orqada xira nusxa, o'rtada panel
-        sc = max(cw / w, ch / h)
-        small = im.resize((max(8, int(w * sc / 6)), max(8, int(h * sc / 6))), Image.BILINEAR)
-        bgi = small.resize((max(cw, int(w * sc)), max(ch, int(h * sc))), Image.BILINEAR)
-        l, t = (bgi.width - cw) // 2, (bgi.height - ch) // 2
-        bgi = bgi.crop((l, t, l + cw, t + ch)).filter(ImageFilter.GaussianBlur(18 * SS))
+        tiny = _cover(im, max(8, cw // 16), max(8, ch // 16), Image.BILINEAR)
+        tiny = tiny.filter(ImageFilter.GaussianBlur(2.2))
+        bgi = tiny.resize((cw, ch), Image.BICUBIC).filter(ImageFilter.GaussianBlur(6 * SS))
         frame = ImageEnhance.Brightness(bgi).enhance(0.45)
-        fw = cw
         fh = max(2, int(round(h * cw / w)))
-        fg = im.resize((fw, fh), Image.LANCZOS)
+        fg = im.resize((cw, fh), Image.LANCZOS)
         frame.paste(fg, (0, (ch - fh) // 2))
     frame.save(base_path, "JPEG", quality=93)
     return {"mode": "zoom", "travel": 0}

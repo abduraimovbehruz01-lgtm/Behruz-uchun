@@ -195,12 +195,17 @@ async def on_page(m: Message):
             if not paths:
                 await m.answer("ZIP ichida rasm topilmadi.")
         elif kind == "pdf":
-            paths = await asyncio.to_thread(manga.pdf_to_images, path, os.path.join(s.dir, "pages", f"z{m.message_id}"))
+            paths, note = await asyncio.to_thread(manga.pdf_to_images, path,
+                                                  os.path.join(s.dir, "pages", f"z{m.message_id}"))
             os.remove(path)
+            if note:
+                await m.answer(note)
             if not paths:
                 await m.answer("PDF ichidan sahifa chiqmadi.")
         else:
             paths = [path]
+        if paths and kind != "pdf":     # juda uzun rasmlar (webtoon tasmasi) bo'laklarga bo'linadi
+            paths = await asyncio.to_thread(lambda ps: [q for p in ps for q in manga.slice_tall(p)], paths)
         if paths:
             s.entries.append({"mid": m.message_id, "paths": paths})
     except Exception as e:
