@@ -10,6 +10,7 @@ Qismlar:
   promo.py     — yangi bob e'loni: kuzatuvchilarga xabar va reklama kanaliga post
   webapp.py    — Mini App (ilova): sahifa va API; rasmlar Cloudflare Worker (worker/) orqali
   cloudflare.py — /cloudflare: bosh admin token yuborsa, bot rasmlar xizmatini o'zi joylaydi va ulaydi
+  torii.py     — Torii tarjimoni (TORII_API_KEY): sahifani to'liq o'zi tarjima qiladi; ishlamasa — Gemini
   rating.py    — reyting (noyob o'quvchilar, baholar); thumbs.py — ilova uchun kichik rasmlar
   traffic.py   — oylik chiquvchi trafik hisobi va chegarasi (Render bepul tarifi: oyiga 5 GB)
   tools.py     — adminlar uchun tezkor tarjima (sahifa/fayl yuborsa — tarjima qilib qaytaradi)
@@ -39,6 +40,7 @@ import reader
 import scheduler
 import staff
 import tools
+import torii
 import traffic
 import typeset
 import translator
@@ -107,6 +109,9 @@ async def on_startup():
     asyncio.create_task(scheduler.loop())
     asyncio.create_task(cloudflare.ensure_latest())
     log.info("Gemini: %s", await GEM.check(http()))
+    if torii.configured():
+        cr = await torii.credits(force=True)
+        log.info("Torii: %s", f"ulandi, {cr:g} kredit" if isinstance(cr, (int, float)) else "kreditlarni bilib bo‘lmadi")
     try:
         await bot.set_my_commands([
             BotCommand(command="start", description="Bosh sahifa"),

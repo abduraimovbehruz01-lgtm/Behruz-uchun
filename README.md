@@ -83,6 +83,13 @@ Bir martalik sozlash (telefondan ham bo‘ladi, GitHub kerak emas):
 Cloudflare ulanmaguncha ilova ishlayveradi: bob tanlansa, u botga yuboriladi.
 
 ## Tarjima qanday ishlaydi
+**Torii** (`TORII_API_KEY` bo‘lsa — asosiy): sahifa toriitranslate.com ga yuboriladi, u matnni topadi, asl yozuvni
+o‘chiradi va o‘zbekcha tarjimani joylaydi (har sahifa kamida 1 kredit). Manga glossariysi va sahifalararo kontekst
+uzatiladi. Kredit tugasa, kalit ishlamasa yoki xizmat band bo‘lsa — avtomatik quyidagi Gemini usuliga o‘tiladi,
+bosh adminga xabar boradi; kredit qo‘shilgach bot o‘zi Torii’ga qaytadi. «📊 Statistika» da kredit qoldig‘i va
+«Torii / Gemini» tanlovi. Ixtiyoriy: `TORII_MODEL` (standart `gemini-3.1-flash-lite`), `TORII_FONT` (standart `wildwords`).
+
+**Gemini** (zaxira yoki tanlansa):
 1. `translator.py` — Google Gemini sahifani ko‘radi: har bir pufakning joyi (box_2d), asl matni va tarjimasini qaytaradi.
    Bir nechta model navbat bilan ishlatiladi: biri band yoki bepul limiti tugasa — keyingisi.
 2. `typeset.py` — asl harflarni o‘chiradi (pufak chizig‘i va rasmga tegmaydi), pufakning ichki chegarasini topadi

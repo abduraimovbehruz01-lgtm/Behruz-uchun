@@ -101,7 +101,9 @@ def menu_text(uid=None):
     pr = CAT.cfg.get("promo") or {}
     lines.append(f"📣 Reklama kanali: «{esc(pr.get('title') or 'kanal')}»" + ("" if pr.get("on", True) else " (to‘xtatilgan)")
                  if pr.get("id") else "📣 Reklama kanali: ulanmagan")
+    import torii
     import traffic
+    lines.append(torii.status_line())
     lines.append("📱 Ilova: " + ("✅ «Menu» tugmasida" if PUBLIC_URL else "— (PUBLIC_URL yo‘q)")
                  + (" · 🖼 rasmlar Cloudflare orqali ✅" if CAT.cfg.get("img_base")
                     else " · 🖼 Cloudflare ulanmagan (boblar botda o‘qiladi) — ulash: /cloudflare"))
@@ -209,31 +211,58 @@ async def cb_menu(c: CallbackQuery, state: FSMContext):
 
 
 def traffic_rows(uid):
+    import torii
     import traffic
     if not CAT.is_owner(uid):
         return None
     cur = traffic.limit_gb()
-    return kb([[((f"✅ {g} GB" if abs(cur - g) < 0.01 else f"{g} GB"), f"adm:tl:{g}") for g in (1, 2, 3, 4)]])
+    rows = [[((f"✅ {g} GB" if abs(cur - g) < 0.01 else f"{g} GB"), f"adm:tl:{g}") for g in (1, 2, 3, 4)]]
+    if torii.configured():
+        on = torii.chosen()
+        rows.append([(("✅ " if on else "") + "🌐 Torii", "adm:trn:torii"),
+                     (("" if on else "✅ ") + "🤖 Gemini", "adm:trn:gemini")])
+    return kb(rows)
 
 
 async def send_stats(uid, edit=None):
+    import torii
     import traffic
     s = await CAT.stats()
+    if torii.configured():
+        await torii.credits()
     text = ("📊 <b>Statistika</b>\n\n"
             f"📚 Mangalar: {s['manga']} · boblar: {s['chapters']}\n"
             f"👥 Foydalanuvchilar: {s['users']} (bugun yangi: {s['new_today']})\n"
             f"📖 Bugun o‘qilgan boblar: {s['reads_today']}\n"
             f"🪙 Bugun sarflangan jetonlar: {s['jetons_today']}\n\n"
+            f"{torii.status_line()}"
+            + (f" · shu ishga tushgandan beri {torii.STATE['pages']} sahifa, {torii.STATE['used']:g} kredit"
+               if torii.STATE["pages"] else "") + "\n"
             f"{traffic.line()}\n"
             "<i>Render bepul tarifida barcha botlaringiz uchun oyiga jami 5 GB bor. Oshib ketsa — hamma botlar oy "
             "oxirigacha to‘xtaydi. Chegaraga yetganda bu bot hamkor kanallardan avtomatik olishni to‘xtatadi.</i>")
     markup = traffic_rows(uid)
     if markup is not None:
-        text += "\n\nShu bot uchun oylik chegara:"
+        text += "\n\nShu bot uchun oylik trafik chegarasi" + (" va tarjimon:" if torii.configured() else ":")
     if edit is not None:
         await safe_edit(edit, text, markup)
     else:
         await bot.send_message(uid, text, reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("adm:trn:"), adm)
+async def cb_translator(c: CallbackQuery):
+    if not CAT.is_owner(c.from_user.id):
+        await deny(c)
+        return
+    import torii
+    which = "gemini" if c.data.endswith("gemini") else "torii"
+    await CAT.set_cfg(translator=which)
+    if which == "torii":
+        torii.STATE.update(down_until=0.0, why="")
+    await jlog(c, f"🌐 Tarjimon: {'Torii' if which == 'torii' else 'Gemini'}")
+    await c.answer("Tarjimon: " + ("Torii" if which == "torii" else "Gemini"))
+    await send_stats(c.from_user.id, edit=c.message)
 
 
 @router.callback_query(F.data.startswith("adm:tl:"), adm)

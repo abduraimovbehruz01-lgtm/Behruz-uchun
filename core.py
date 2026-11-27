@@ -402,7 +402,17 @@ async def translate_image(img, uid: int, notify=None, glossary=None, names=None)
     """Sahifani (kerak bo'lsa bo'laklab) Gemini'ga yuboradi va tarjimani rasmga yozadi.
     glossary — [(asl, tarjima), ...] (ismlar har doim shunday yoziladi); names — ro'yxat berilsa, sahifadagi
     ismlar/atamalar shunga qo'shiladi (glossariyga taklif qilish uchun).
-    Qaytaradi: (yangi rasm, bloklar, asl til)."""
+    Qaytaradi: (yangi rasm, bloklar, asl til).
+    Torii ulangan va tanlangan bo'lsa — sahifani Torii tarjima qiladi; u ishlamasa, shu yerda Gemini davom etadi."""
+    import torii
+    if torii.active():
+        try:
+            return await torii.translate_image(img, uid, glossary=glossary, notify=notify)
+        except torii.ToriiError as e:
+            await torii.note_failure(e)
+        except Exception as e:
+            log.exception("Torii tarjimasi")
+            await torii.note_failure(torii.ToriiError(repr(e)[:200], "error"))
     segs = await asyncio.to_thread(typeset.split_points, img)
     w = img.width
     out = img if len(segs) == 1 else img.copy()

@@ -89,6 +89,11 @@ async def loop():
             await cloudflare.tick()       # joylangan rasmlar xizmati ishga tushdimi
         except Exception:
             log.exception("cloudflare")
+        try:
+            import torii
+            await torii.tick()            # Torii kreditlari: kam qolsa ogohlantirish, qo'shilsa qayta yoqish
+        except Exception:
+            log.exception("torii")
         await asyncio.sleep(CHECK_EVERY)
 
 
