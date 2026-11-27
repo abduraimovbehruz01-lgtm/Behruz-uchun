@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Manhora</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:#0b0b10;--card:#15151d;--card2:#1d1d28;--line:#272734;--text:#f4f4f8;--muted:#9a9aae;--dim:#6c6c80;
+--acc:#ff5a36;--acc2:#ff9a3c;--gold:#ffc53d;--green:#39d07c;--red:#ff4d63;--r:14px;--safe:env(safe-area-inset-bottom)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--text);font:15px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+body{padding-bottom:calc(66px + var(--safe));min-height:100vh;overscroll-behavior-y:none}
+body.reading{padding-bottom:0;background:#000}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+input{font:inherit}
+img{display:block}
+a{color:var(--acc2)}
+#view{min-height:70vh}
+.wrap{padding:0 14px}
+/* yuklanish */
+.boot{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg);z-index:50;text-align:center;padding:24px}
+.boot .logo{font-size:30px}
+.spin{width:34px;height:34px;border-radius:50%;border:3px solid #2b2b3a;border-top-color:var(--acc);animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.boot p{color:var(--muted);margin:0;max-width:280px;font-size:14px}
+.logo{font-weight:900;letter-spacing:.5px;background:linear-gradient(90deg,var(--acc),var(--acc2));-webkit-background-clip:text;background-clip:text;color:transparent}
+/* bosh sahifa */
+.brand{display:flex;align-items:center;justify-content:space-between;padding:14px 14px 6px}
+.brand .logo{font-size:22px}
+.pill{display:inline-flex;align-items:center;gap:6px;background:var(--card2);border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-weight:600;font-size:14px}
+.banner{display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;padding:8px 14px 4px;scrollbar-width:none}
+.banner::-webkit-scrollbar,.row::-webkit-scrollbar,.chips::-webkit-scrollbar{display:none}
+.slide{position:relative;flex:0 0 88%;scroll-snap-align:center;height:200px;border-radius:18px;overflow:hidden;background:var(--card2)}
+.slide .bg{position:absolute;inset:-20px;background-size:cover;background-position:center;filter:blur(18px) brightness(.55);transform:scale(1.1)}
+.slide .in{position:relative;display:flex;gap:12px;height:100%;padding:14px}
+.slide .cv{flex:0 0 112px;height:100%;border-radius:12px;overflow:hidden;box-shadow:0 8px 24px #0009}
+.slide .tx{display:flex;flex-direction:column;justify-content:flex-end;min-width:0}
+.slide h3{margin:0 0 4px;font-size:18px;line-height:1.2;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.slide .g{color:#d9d9e6;font-size:12px;margin-bottom:6px}
+.slide .d{color:#c4c4d2;font-size:12px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:10px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:linear-gradient(90deg,var(--acc),var(--acc2));color:#fff;font-weight:700;border-radius:12px;padding:11px 16px;font-size:15px}
+.btn.sm{padding:8px 12px;font-size:13px;border-radius:10px}
+.btn.ghost{background:var(--card2);border:1px solid var(--line);color:var(--text)}
+.btn.block{display:flex;width:100%}
+.btn:active,.ch:active,.mini:active,.cc:active,.upd:active,.rk:active{transform:scale(.97)}
+.sec{margin-top:18px}
+.sec-h{display:flex;align-items:center;justify-content:space-between;padding:0 14px 8px}
+.sec-h h2{margin:0;font-size:18px}
+.sec-h button{color:var(--acc2);font-size:14px;font-weight:600}
+.row{display:flex;gap:10px;overflow-x:auto;padding:0 14px;scrollbar-width:none}
+.mini{flex:0 0 108px;min-width:0}
+.mini .cv{position:relative;aspect-ratio:3/4;border-radius:12px;overflow:hidden;background:var(--card2)}
+.mini .t{font-size:13px;font-weight:600;margin-top:6px;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.mini .s{font-size:12px;color:var(--muted);margin-top:2px}
+.mini .bar{position:absolute;left:0;right:0;bottom:0;height:4px;background:#0008}
+.mini .bar i{display:block;height:100%;background:var(--acc)}
+.rankno{position:absolute;left:-2px;bottom:-12px;font-size:56px;font-weight:900;line-height:1;color:#0b0b10;-webkit-text-stroke:2px #fff;text-shadow:0 2px 8px #000a}
+.top10 .mini{flex-basis:118px;padding-left:16px}
+.cv img,.cc img{width:100%;height:100%;object-fit:cover}
+.ph{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:22px;color:#fff9;background:linear-gradient(135deg,#2a1f3d,#3d1f2a)}
+.list{padding:0 14px;display:flex;flex-direction:column;gap:8px}
+.upd{display:flex;gap:12px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:8px}
+.upd .cv{flex:0 0 52px;height:70px;border-radius:9px;overflow:hidden;background:var(--card2)}
+.upd .m{flex:1;min-width:0}
+.upd .t{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.upd .s{color:var(--muted);font-size:13px;margin-top:3px}
+.tag{display:inline-block;font-size:11px;font-weight:800;padding:3px 7px;border-radius:7px;background:var(--card2);color:var(--muted);white-space:nowrap}
+.tag.free{background:#173a28;color:var(--green)}
+.tag.paid{background:#3a2d12;color:var(--gold)}
+.tag.new{background:var(--acc);color:#fff}
+.chips{display:flex;gap:8px;overflow-x:auto;padding:0 14px;scrollbar-width:none}
+.chips.wrapc{flex-wrap:wrap;overflow:visible}
+.chip{flex:0 0 auto;padding:7px 13px;border-radius:99px;background:var(--card2);border:1px solid var(--line);font-size:13px;font-weight:600;color:#d4d4e0}
+.chip.on{background:var(--text);color:#111;border-color:var(--text)}
+.empty{text-align:center;color:var(--muted);padding:48px 24px}
+.empty .e{font-size:40px;margin-bottom:8px}
+/* katalog */
+.search{position:sticky;top:0;z-index:5;background:linear-gradient(var(--bg) 80%,#0b0b1000);padding:12px 14px 10px}
+.search input{width:100%;background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:11px 14px;color:var(--text);outline:none;font-size:16px}
+.search input:focus{border-color:#45455a}
+.filters{display:flex;gap:8px;padding:10px 14px 4px;overflow-x:auto;scrollbar-width:none}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px 10px;padding:12px 14px}
+.cc{min-width:0}
+.cc .cv{position:relative;aspect-ratio:3/4;border-radius:12px;overflow:hidden;background:var(--card2)}
+.cc .t{font-size:13px;font-weight:600;margin-top:6px;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.cc .s{font-size:11.5px;color:var(--muted);margin-top:2px}
+.badge{position:absolute;top:6px;left:6px;font-size:10.5px;font-weight:800;padding:3px 6px;border-radius:6px;background:#000b;color:#fff}
+.badge.r{left:auto;right:6px;background:var(--acc)}
+.count{color:var(--muted);font-size:13px;padding:0 14px}
+/* manga sahifasi */
+.hero{position:relative;overflow:hidden}
+.hero .bg{position:absolute;inset:-30px;background-size:cover;background-position:center;filter:blur(26px) brightness(.45);transform:scale(1.15)}
+.hero .fade{position:absolute;inset:0;background:linear-gradient(#0b0b1000 30%,var(--bg))}
+.hero .in{position:relative;display:flex;gap:14px;padding:18px 14px 10px}
+.hero .cv{flex:0 0 118px;aspect-ratio:3/4;border-radius:12px;overflow:hidden;box-shadow:0 10px 30px #000b;background:var(--card2)}
+.hero .tx{min-width:0;display:flex;flex-direction:column;justify-content:flex-end}
+.hero h1{font-size:21px;line-height:1.2;margin:0 0 6px}
+.meta{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:13px;color:#d0d0dc}
+.meta b{color:var(--gold)}
+.gen{display:flex;flex-wrap:wrap;gap:6px;padding:8px 14px 0}
+.gen span{font-size:12px;padding:4px 9px;border-radius:99px;background:var(--card2);color:#cfcfdc;border:1px solid var(--line)}
+.acts{padding:14px 14px 4px}
+.acts .btn{display:flex;width:100%;padding:13px 16px;font-size:16px}
+.acts2{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:10px 14px 0}
+.acts2 button{display:flex;flex-direction:column;align-items:center;gap:4px;padding:9px 2px;border-radius:12px;background:var(--card);border:1px solid var(--line);font-size:11.5px;font-weight:600;color:#cfcfdc}
+.acts2 button i{font-style:normal;font-size:19px;line-height:1}
+.acts2 button.on{border-color:#ff5a3688;background:#24130f;color:#fff}
+.ic{width:46px;height:46px;flex:0 0 46px;display:flex;align-items:center;justify-content:center;border-radius:12px;background:var(--card2);border:1px solid var(--line);font-size:19px}
+.ic.on{border-color:var(--acc);background:#2a1712}
+.desc{padding:10px 14px 0;color:#c9c9d6;font-size:14px;line-height:1.5;white-space:pre-line}
+.desc.cut{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.more{padding:4px 14px 0;color:var(--acc2);font-size:14px;font-weight:600}
+.small{color:var(--muted);font-size:13px;padding:6px 14px 0}
+.chh{display:flex;align-items:center;justify-content:space-between;padding:20px 14px 10px}
+.chh h2{margin:0;font-size:18px}
+.chh button{color:var(--muted);font-size:13px;font-weight:600;background:var(--card2);border:1px solid var(--line);padding:6px 10px;border-radius:9px}
+.chgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:0 14px 20px}
+.ch{position:relative;border-radius:12px;overflow:hidden;background:var(--card2);aspect-ratio:3/4}
+.ch .im{position:absolute;inset:0}
+.ch .shade{position:absolute;inset:0;background:linear-gradient(#0000 45%,#000d)}
+.ch .n{position:absolute;left:8px;bottom:7px;font-weight:800;font-size:14px;text-shadow:0 1px 3px #000}
+.ch .tt{position:absolute;left:8px;right:8px;bottom:26px;font-size:11px;color:#ddd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ch .lk{position:absolute;top:6px;right:6px;font-size:11.5px;font-weight:800;padding:3px 7px;border-radius:8px;background:#000c;color:var(--gold);border:1px solid #ffc53d55}
+.ch .nw{position:absolute;top:6px;left:6px;font-size:10px;font-weight:800;padding:3px 6px;border-radius:6px;background:var(--acc);color:#fff}
+.ch.read .im{opacity:.45}
+.ch .ok{position:absolute;top:6px;right:6px;width:22px;height:22px;border-radius:50%;background:var(--green);color:#062;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:900}
+.ch.locked .im{filter:brightness(.6)}
+/* o'quvchi */
+.rd{max-width:900px;margin:0 auto;background:#000;padding-top:58px}
+.pg{width:100%;height:auto;min-height:60vh;background:#0d0d12 url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><circle cx="20" cy="20" r="14" fill="none" stroke="%23333" stroke-width="3"/></svg>') center no-repeat}
+.pg.ok{min-height:0;background:none}
+.pg.err{min-height:120px}
+.rd-top{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;align-items:center;gap:10px;padding:10px 12px;background:#000d;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);transition:transform .25s}
+.rd-top.hide{transform:translateY(-110%)}
+.rd-top .ic{width:38px;height:38px;flex-basis:38px;font-size:20px}
+.rd-t{flex:1;min-width:0;line-height:1.2}
+.rd-t b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14px}
+.rd-t span{font-size:12px;color:var(--muted)}
+.rd-pg{font-size:12px;color:var(--muted);background:var(--card2);padding:5px 9px;border-radius:8px}
+.rd-end{padding:28px 16px calc(28px + var(--safe));text-align:center;background:var(--bg)}
+.rd-end h3{margin:0 0 6px}
+.rd-end p{color:var(--muted);margin:0 0 16px;font-size:14px}
+.rd-nav{display:flex;gap:10px;margin-bottom:10px}
+.rd-nav .btn{flex:1}
+.center{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;min-height:70vh;padding:24px;gap:10px}
+.center .e{font-size:46px}
+.center h3{margin:4px 0}
+.center p{color:var(--muted);margin:0 0 10px;max-width:300px}
+/* reyting */
+.seg{display:flex;gap:4px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:4px;margin:12px 14px 8px}
+.seg button{flex:1;padding:8px 4px;border-radius:9px;font-size:13px;font-weight:700;color:var(--muted)}
+.seg button.on{background:var(--card2);color:var(--text);box-shadow:0 1px 4px #0006}
+.hint{color:var(--dim);font-size:12.5px;padding:0 14px 10px}
+.rk{display:flex;align-items:center;gap:12px;padding:8px 14px}
+.rk .no{flex:0 0 30px;text-align:center;font-weight:900;font-size:18px;color:var(--muted)}
+.rk .no.m1{color:#ffd24a}.rk .no.m2{color:#cfd6e0}.rk .no.m3{color:#e39a5b}
+.rk .cv{flex:0 0 50px;height:66px;border-radius:9px;overflow:hidden;background:var(--card2)}
+.rk .m{flex:1;min-width:0}
+.rk .t{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rk .s{color:var(--muted);font-size:12.5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rk .v{text-align:right;font-size:13px;font-weight:700;white-space:nowrap}
+.rk .dl{display:block;font-size:11.5px;font-weight:800;margin-top:2px}
+.up{color:var(--green)}.dn{color:var(--red)}.nw2{color:var(--acc2)}
+/* profil */
+.prof{display:flex;align-items:center;gap:14px;padding:20px 14px 8px}
+.av{width:60px;height:60px;border-radius:50%;overflow:hidden;background:linear-gradient(135deg,var(--acc),#7a2cff);display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;flex:0 0 60px}
+.av img{width:100%;height:100%;object-fit:cover}
+.prof h2{margin:0;font-size:19px}
+.prof .u{color:var(--muted);font-size:13px;margin-top:2px}
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px 14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px;display:flex;flex-direction:column}
+.card .btn{margin-top:auto}
+.card .k{color:var(--muted);font-size:12.5px}
+.card .v{font-size:20px;font-weight:800;margin:4px 0 10px}
+/* oyna */
+.back{position:fixed;inset:0;background:#000a;z-index:40;opacity:0;transition:opacity .2s}
+.back.show{opacity:1}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:41;background:var(--card);border-radius:20px 20px 0 0;border-top:1px solid var(--line);padding:10px 18px calc(20px + var(--safe));transform:translateY(100%);transition:transform .25s;text-align:center;max-height:85vh;overflow:auto}
+.sheet.show{transform:none}
+.sheet .grab{width:40px;height:5px;border-radius:9px;background:#3a3a4a;margin:0 auto 12px}
+.sheet h3{margin:6px 0}
+.sheet p{color:var(--muted);margin:0 0 16px}
+.sheet .btn{display:flex;width:100%;margin-top:8px}
+.big{font-size:44px}
+.stars{display:flex;justify-content:center;gap:8px;margin:10px 0 18px}
+.stars button{font-size:38px;line-height:1;filter:grayscale(1) brightness(.7);transition:transform .1s}
+.stars button.on{filter:none}
+.stars button:active{transform:scale(1.2)}
+.toast{position:fixed;left:50%;bottom:calc(80px + var(--safe));transform:translate(-50%,20px);width:max-content;background:#262633;color:#fff;padding:10px 16px;border-radius:12px;font-size:14px;z-index:60;opacity:0;transition:all .25s;pointer-events:none;max-width:88vw;text-align:center;box-shadow:0 6px 20px #0008}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+body.reading .toast{bottom:calc(24px + var(--safe))}
+/* pastki menyu */
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;background:#101017f2;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-top:1px solid var(--line);padding:6px 6px calc(6px + var(--safe))}
+.tabs button{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;font-weight:600;color:var(--dim);padding:4px 0}
+.tabs button svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.tabs button.on{color:var(--text)}
+.tabs button.on svg{stroke:var(--acc)}
+body.reading .tabs{display:none}
+.skel{background:linear-gradient(90deg,#17171f,#21212c,#17171f);background-size:200% 100%;animation:sk 1.2s infinite;border-radius:12px}
+@keyframes sk{to{background-position:-200% 0}}
+.subs{display:flex;flex-direction:column;gap:8px;width:100%;max-width:320px}
+</style>
+</head>
+<body>
+<div class="boot" id="boot"><div class="logo">MANHORA</div><div class="spin"></div><p id="bootMsg">Yuklanmoqda…</p></div>
+<main id="view"></main>
+<nav class="tabs" id="tabs">
+  <button data-tab="home"><svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg><span>Asosiy</span></button>
+  <button data-tab="catalog"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span>Katalog</span></button>
+  <button data-tab="top"><svg viewBox="0 0 24 24"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3"/></svg><span>Reyting</span></button>
+  <button data-tab="me"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span>Profil</span></button>
+</nav>
+<div class="toast" id="toast"></div>
+<script>
+"use strict";
+const tg = (window.Telegram && window.Telegram.WebApp) || {initData: "", initDataUnsafe: {}, ready() {}, expand() {},
+  isVersionAtLeast() { return false; }, BackButton: {show() {}, hide() {}, onClick() {}}, openTelegramLink(u) { location.href = u; },
+  openLink(u) { location.href = u; }, close() {}, HapticFeedback: null};
+const ver = v => { try { return tg.isVersionAtLeast(v); } catch (e) { return false; } };
+const S = {boot: null, nav: [], scroll: {}, manga: {}, rating: {}, me: null,
+  f: {q: "", g: "", st: "", sort: "pop"}, desc: true, period: "week", reader: null};
+const $ = id => document.getElementById(id);
+const V = $("view");
+
+/* ---------- yordamchilar ---------- */
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c])); }
+function num(n) { n = +n || 0; if (n >= 1e6) return (n / 1e6).toFixed(1).replace(".0", "").replace(".", ",") + " mln"; if (n >= 1e3) return (n / 1e3).toFixed(1).replace(".0", "").replace(".", ",") + " ming"; return String(n); }
+function ago(ts) {
+  if (!ts) return "";
+  const s = Date.now() / 1000 - ts;
+  if (s < 90) return "hozirgina";
+  if (s < 3600) return Math.round(s / 60) + " daqiqa oldin";
+  if (s < 86400) return Math.round(s / 3600) + " soat oldin";
+  if (s < 172800) return "kecha";
+  if (s < 7 * 86400) return Math.floor(s / 86400) + " kun oldin";
+  const d = new Date(ts * 1000);
+  return String(d.getDate()).padStart(2, "0") + "." + String(d.getMonth() + 1).padStart(2, "0") + "." + d.getFullYear();
+}
+function initials(t) { return (String(t || "").trim().split(/\s+/).slice(0, 2).map(w => (w.match(/[\p{L}\p{N}]/u) || [""])[0]).join("") || "M").toUpperCase(); }
+function img(src, title, eager) {
+  if (!src) return `<div class="ph">${initials(title)}</div>`;
+  return `<img src="${esc(src)}" alt="" ${eager ? "" : 'loading="lazy"'} decoding="async" referrerpolicy="no-referrer" onerror="this.outerHTML='<div class=&quot;ph&quot;>${initials(title)}</div>'">`;
+}
+const STATUS = {ongoing: "Davom etmoqda", completed: "Tugagan", hiatus: "To‘xtatilgan", soon: "Tez orada"};
+function hap(kind) {
+  try {
+    const h = tg.HapticFeedback; if (!h || !ver("6.1")) return;
+    if (kind === "ok" || kind === "err") h.notificationOccurred(kind === "ok" ? "success" : "error"); else h.impactOccurred(kind || "light");
+  } catch (e) {}
+}
+let toastT = 0;
+function toast(t) { const el = $("toast"); el.textContent = t; el.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove("show"), 2600); }
+function byCode(code) { return (S.boot && S.boot.catalog.find(m => m.code === String(code))) || null; }
+function botLink(arg) { return "https://t.me/" + (S.boot && S.boot.bot || "ManhoraBot") + (arg ? "?start=" + arg : ""); }
+function openTg(url) { try { if (ver("6.1")) { tg.openTelegramLink(url); return; } } catch (e) {} location.href = url; }
+
+async function api(name, params, post) {
+  let url = "/api/" + name, opt = {headers: {"X-Init-Data": tg.initData || ""}};
+  if (post) { opt.method = "POST"; opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(params || {}); }
+  else if (params) url += "?" + new URLSearchParams(params).toString();
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 30000);
+  opt.signal = ctl.signal;
+  let r, data;
+  try { r = await fetch(url, opt); } finally { clearTimeout(t); }
+  try { data = await r.json(); } catch (e) { data = {error: "Server javobi tushunarsiz (" + r.status + ")"}; }
+  if (!r.ok) { const err = new Error(data.error || ("Xato " + r.status)); err.status = r.status; err.data = data; throw err; }
+  return data;
+}
+
+/* ---------- navigatsiya ---------- */
+const ROOTS = {home: 1, catalog: 1, top: 1, me: 1};
+function go(route, replace) {
+  const cur = S.nav[S.nav.length - 1];
+  if (cur) S.scroll[cur] = window.scrollY;
+  if (replace && S.nav.length) S.nav[S.nav.length - 1] = route; else S.nav.push(route);
+  if (S.nav.length > 40) S.nav.splice(0, S.nav.length - 40);
+  render(false);
+}
+function tab(route) { const cur = S.nav[S.nav.length - 1]; if (cur) S.scroll[cur] = window.scrollY; S.nav = [route]; render(false); }
+function back() {
+  if ($("sht")) { closeSheet(); return; }
+  if (S.nav.length > 1) { S.nav.pop(); render(true); } else if (S.nav[0] !== "home") { S.nav = ["home"]; render(true); }
+}
+function render(restore) {
+  const route = S.nav[S.nav.length - 1] || "home";
+  const [name, a, b] = route.split("/");
+  document.body.classList.toggle("reading", name === "r");
+  document.querySelectorAll(".tabs button").forEach(el => el.classList.toggle("on", el.dataset.tab === name));
+  try { if (S.nav.length > 1 || !ROOTS[name]) tg.BackButton.show(); else tg.BackButton.hide(); } catch (e) {}
+  if (S.reader) { try { S.reader.obs.disconnect(); S.reader.off(); } catch (e) {} S.reader = null; }
+  const y = restore ? (S.scroll[route] || 0) : 0;
+  if (name === "home") V.innerHTML = vHome();
+  else if (name === "catalog") { V.innerHTML = vCatalog(); bindSearch(); }
+  else if (name === "top") vTop();
+  else if (name === "me") vMe();
+  else if (name === "m") vManga(a, restore);
+  else if (name === "r") vReader(a, b);
+  else V.innerHTML = vHome();
+  window.scrollTo(0, y);
+}
+
+/* ---------- bosh sahifa ---------- */
+function slide(m) {
+  return `<div class="slide" data-go="m/${m.code}"><div class="bg" style="background-image:url('${esc(m.big || m.cover)}')"></div>
+  <div class="in"><div class="cv">${img(m.big || m.cover, m.title, true)}</div><div class="tx">
+  <h3>${esc(m.title)}</h3><div class="g">${esc((m.genres || []).slice(0, 3).join(" · "))}${m.stars ? " · ⭐ " + m.stars : ""}</div>
+  ${m.desc ? `<div class="d">${esc(m.desc)}</div>` : ""}<div><span class="btn sm">📖 O‘qish</span></div></div></div></div>`;
+}
+function mini(m, sub, extra) {
+  return `<div class="mini" data-go="m/${m.code}"><div class="cv">${img(m.cover, m.title)}${extra || ""}</div>
+  <div class="t">${esc(m.title)}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
+}
+function sec(title, inner, cls, more) {
+  return `<section class="sec"><div class="sec-h"><h2>${title}</h2>${more ? `<button data-go="${more}">Hammasi ›</button>` : ""}</div><div class="${cls || ""}">${inner}</div></section>`;
+}
+function vHome() {
+  const b = S.boot;
+  let h = `<header class="brand"><div class="logo">MANHORA</div><button class="pill" data-tab="me">🪙 ${b.me.jetons}${b.me.vip ? " · 💎" : ""}</button></header>`;
+  if (b.banner.length) h += `<div class="banner">${b.banner.map(slide).join("")}</div>`;
+  if (b.continue.length) h += sec("▶️ Davom ettirish", b.continue.map(c => {
+    const pct = c.total ? Math.min(100, Math.round(100 * (+c.n || 0) / c.total)) : 0;
+    return mini(c, c.next ? `${esc(c.next)}-bob navbatda` : `${esc(c.n)}-bob o‘qildi`, `<div class="bar"><i style="width:${pct}%"></i></div>`);
+  }).join(""), "row");
+  if (b.latest.length) h += sec("🆕 Yangi boblar", b.latest.slice(0, 12).map(u => `
+    <div class="upd" data-go="m/${u.code}"><div class="cv">${img(u.thumb || u.cover, u.title)}</div>
+    <div class="m"><div class="t">${esc(u.title)}</div><div class="s">${esc(u.n)}-bob${u.fresh > 1 ? ` · +${u.fresh} ta yangi` : ""} · ${ago(u.pub)}</div></div>
+    ${u.price ? `<span class="tag paid">🔒 ${u.price} 🪙</span>` : `<span class="tag free">Bepul</span>`}</div>`).join(""), "list");
+  if (b.top.length) h += sec("🔥 Haftaning topi", b.top.map(t => mini(t, t.value ? `👁 ${num(t.value)} o‘quvchi` : "", `<span class="rankno">${t.rank}</span>`)).join(""), "row top10", "top");
+  if (b.genres.length) h += sec("🏷 Janrlar", `<div class="chips wrapc">${b.genres.map(g => `<button class="chip" data-genre="${esc(g)}">${esc(g)}</button>`).join("")}</div>`);
+  if (!b.catalog.length) h += `<div class="empty"><div class="e">📭</div>Katalog hozircha bo‘sh — tez orada mangalar qo‘shiladi.</div>`;
+  return h + `<div style="height:20px"></div>`;
+}
+
+/* ---------- katalog ---------- */
+function normq(s) { return String(s || "").toLowerCase().replace(/[‘’ʻʼ`']/g, "'").trim(); }
+function catItems() {
+  const f = S.f, q = normq(f.q);
+  let items = S.boot.catalog.filter(m => (!f.g || (m.genres || []).includes(f.g)) && (!f.st || m.status === f.st)
+    && (!q || normq(m.title).includes(q) || m.code.startsWith(q)));
+  const by = {pop: (a, b) => b.views - a.views, new: (a, b) => b.updated - a.updated,
+    stars: (a, b) => (b.stars - a.stars) || (b.votes - a.votes), az: (a, b) => a.title.localeCompare(b.title, "uz")};
+  return items.sort(by[f.sort] || by.pop);
+}
+function card(m) {
+  const sub = [m.stars ? "⭐ " + m.stars : "", m.chapters ? m.chapters + " bob" : "Tez orada"].filter(Boolean).join(" · ");
+  return `<div class="cc" data-go="m/${m.code}"><div class="cv">${img(m.cover, m.title)}
+  ${m.status === "completed" ? `<span class="badge">Tugagan</span>` : ""}${m.rank && m.rank <= 3 ? `<span class="badge r">🔥 ${m.rank}</span>` : ""}</div>
+  <div class="t">${esc(m.title)}</div><div class="s">${sub}</div></div>`;
+}
+function vCatalog() {
+  const f = S.f, sorts = [["pop", "🔥 Mashhur"], ["new", "🆕 Yangi"], ["stars", "⭐ Baho"], ["az", "A–Z"]];
+  const sts = [["", "Hammasi"], ["ongoing", "Davom etmoqda"], ["completed", "Tugagan"]];
+  return `<div class="search"><input id="q" type="search" enterkeyhint="search" placeholder="🔎 Nom yoki kod…" value="${esc(f.q)}" autocomplete="off"></div>
+  <div class="chips">${["", ...S.boot.genres].map(g => `<button class="chip ${f.g === g ? "on" : ""}" data-g="${esc(g)}">${esc(g || "Barcha janrlar")}</button>`).join("")}</div>
+  <div class="filters">${sorts.map(([k, t]) => `<button class="chip ${f.sort === k ? "on" : ""}" data-sort="${k}">${t}</button>`).join("")}
+  ${sts.slice(1).map(([k, t]) => `<button class="chip ${f.st === k ? "on" : ""}" data-st="${k}">${t}</button>`).join("")}</div>
+  <div id="cres">${catResults()}</div>`;
+}
+function catResults() {
+  const items = catItems();
+  if (!items.length) return `<div class="empty"><div class="e">🤷</div>Hech narsa topilmadi.${S.f.q ? "<br>Boshqa so‘z bilan izlab ko‘ring." : ""}</div>`;
+  return `<div class="count">${items.length} ta manga</div><div class="grid3">${items.map(card).join("")}</div>`;
+}
+function bindSearch() {
+  const q = $("q"); if (!q) return;
+  let t = 0;
+  q.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => { S.f.q = q.value; $("cres").innerHTML = catResults(); }, 120); });
+  q.addEventListener("keydown", e => { if (e.key === "Enter") q.blur(); });
+}
+
+/* ---------- manga sahifasi ---------- */
+async function loadManga(code, force) {
+  const c = S.manga[code];
+  if (c && !force && Date.now() - c.t < 60000) return c.d;
+  const d = await api("manga", {code});
+  S.manga[code] = {t: Date.now(), d};
+  return d;
+}
+function skelManga() {
+  return `<div class="hero"><div class="in"><div class="cv skel"></div><div class="tx" style="flex:1"><div class="skel" style="height:22px;width:80%;margin-bottom:10px"></div><div class="skel" style="height:14px;width:60%"></div></div></div></div>
+  <div class="chgrid" style="margin-top:20px">${'<div class="ch skel"></div>'.repeat(6)}</div>`;
+}
+async function vManga(code, restore) {
+  const cached = S.manga[code];
+  V.innerHTML = cached ? mangaHtml(cached.d) : skelManga();
+  try {
+    const d = await loadManga(code, !restore);
+    if (S.nav[S.nav.length - 1] !== "m/" + code) return;
+    const y = window.scrollY;
+    V.innerHTML = mangaHtml(d);
+    if (restore || cached) window.scrollTo(0, y);
+  } catch (e) { if (!cached) V.innerHTML = errHtml(e); }
+}
+function chapterTile(c, m) {
+  const fresh = c.pub && Date.now() / 1000 - c.pub < 3 * 86400;
+  return `<div class="ch ${c.read ? "read" : ""} ${c.open ? "" : "locked"}" data-ch="${esc(m.code)}/${esc(c.n)}">
+  <div class="im">${img(c.thumb || m.cover, m.title)}</div><div class="shade"></div>
+  ${c.title ? `<div class="tt">${esc(c.title)}</div>` : ""}<div class="n">${esc(c.n)}-bob</div>
+  ${!c.open ? `<span class="lk">🔒 ${c.price} 🪙</span>` : c.read ? `<span class="ok">✓</span>` : ""}${fresh && !c.read ? `<span class="nw">YANGI</span>` : ""}</div>`;
+}
+function startTarget(d) {
+  const chs = d.chapters;
+  if (!chs.length) return null;
+  const p = d.manga.progress;
+  if (p == null) return {c: chs[0], label: "📖 O‘qishni boshlash"};
+  const i = chs.findIndex(c => c.n === p);
+  if (i >= 0 && i + 1 < chs.length) return {c: chs[i + 1], label: `▶️ Davom etish: ${chs[i + 1].n}-bob`};
+  const cur = i >= 0 ? chs[i] : chs[chs.length - 1];
+  return {c: cur, label: `🔁 ${cur.n}-bobni qayta o‘qish`};
+}
+function mangaHtml(d) {
+  const m = d.manga, chs = d.chapters.slice(), st = startTarget(d);
+  if (S.desc) chs.reverse();
+  const meta = [m.stars ? `<span><b>⭐ ${m.stars}</b> (${m.votes})</span>` : "", m.rank ? `<span>🏆 #${m.rank}</span>` : "",
+    `<span>👁 ${num(m.views)}</span>`, `<span>📚 ${m.chapters} bob</span>`].filter(Boolean).join("");
+  const info = [m.status_text, m.days ? "📅 " + m.days : ""].filter(Boolean).join(" · ");
+  return `<div class="hero"><div class="bg" style="background-image:url('${esc(m.big || m.cover)}')"></div><div class="fade"></div>
+  <div class="in"><div class="cv">${img(m.big || m.cover, m.title, true)}</div><div class="tx"><h1>${esc(m.title)}</h1>
+  <div class="meta">${meta}</div></div></div></div>
+  ${(m.genres || []).length ? `<div class="gen">${m.genres.map(g => `<span>${esc(g)}</span>`).join("")}</div>` : ""}
+  ${info ? `<div class="small">${esc(info)}</div>` : ""}${m.credit ? `<div class="small">✍️ ${esc(m.credit)}</div>` : ""}
+  <div class="acts">${st ? `<button class="btn" data-ch="${esc(m.code)}/${esc(st.c.n)}">${st.label}</button>` : `<button class="btn ghost" disabled>⏳ Boblar tez orada</button>`}</div>
+  <div class="acts2"><button class="${m.fav ? "on" : ""}" data-act="fav" data-code="${esc(m.code)}"><i>${m.fav ? "❤️" : "🤍"}</i>${m.fav ? "Sevimlida" : "Sevimli"}</button>
+  <button class="${m.follow ? "on" : ""}" data-act="follow" data-code="${esc(m.code)}"><i>${m.follow ? "🔔" : "🔕"}</i>${m.follow ? "Kuzatyapsiz" : "Kuzatish"}</button>
+  <button class="${m.mine ? "on" : ""}" data-act="rate" data-code="${esc(m.code)}"><i>⭐</i>${m.mine ? "Baho: " + m.mine : "Baho"}</button>
+  <button data-act="share" data-code="${esc(m.code)}"><i>📤</i>Ulashish</button></div>
+  ${m.desc ? `<div class="desc cut" id="desc">${esc(m.desc)}</div><button class="more" data-act="desc">Batafsil ▾</button>` : ""}
+  <div class="chh"><h2>Boblar (${d.chapters.length})</h2>${d.chapters.length > 1 ? `<button data-act="sort">${S.desc ? "⬇️ Avval yangilari" : "⬆️ Avval eskilari"}</button>` : ""}</div>
+  ${d.chapters.length ? `<div class="chgrid">${chs.map(c => chapterTile(c, m)).join("")}</div>` : `<div class="empty"><div class="e">⏳</div>Boblar tez orada qo‘shiladi.<br>🔔 tugmasini bosing — chiqqanda xabar beramiz.</div>`}`;
+}
+
+/* ---------- o'qish ---------- */
+function openChapter(code, n) {
+  const d = S.manga[code] && S.manga[code].d;
+  const c = d && d.chapters.find(x => x.n === String(n));
+  if (c && !c.open) { lockedSheet(code, n, {price: c.price, balance: S.boot.me.jetons}); return; }
+  go(`r/${code}/${n}`);
+}
+async function vReader(code, n) {
+  V.innerHTML = `<div class="center"><div class="spin"></div><p>${esc(n)}-bob ochilmoqda…</p></div>`;
+  let d;
+  try { d = await api("chapter", {code, num: n}); }
+  catch (e) {
+    if (S.nav[S.nav.length - 1] !== `r/${code}/${n}`) return;
+    if (e.status === 402) { V.innerHTML = lockedHtml(code, n, e.data); return; }
+    if (e.status === 403 && e.data && e.data.need_sub) { subScreen(e.data.need_sub, () => go(`r/${code}/${n}`, true)); return; }
+    V.innerHTML = errHtml(e); return;
+  }
+  if (S.nav[S.nav.length - 1] !== `r/${code}/${n}`) return;
+  if (d.bot) {
+    V.innerHTML = `<div class="center"><div class="e">📲</div><h3>${esc(d.title)} · ${esc(d.n)}-bob</h3>
+    <p>Hozircha boblar bot ichida o‘qiladi. Tugmani bosing — bob botga keladi.</p>
+    <button class="btn" data-act="readbot" data-code="${esc(code)}" data-n="${esc(n)}">📖 Botda o‘qish</button>
+    <button class="btn ghost" data-act="back" style="margin-top:6px">⬅️ Orqaga</button></div>`;
+    return;
+  }
+  const mc = S.manga[code]; if (mc) { mc.d.manga.progress = d.n; mc.d.chapters.forEach(c => { if (+c.num <= +d.num) c.read = true; }); }
+  updateContinue(code, d);
+  V.innerHTML = `<div class="rd-top" id="rdTop"><button class="ic" data-act="back">‹</button>
+    <div class="rd-t"><b>${esc(d.title)}</b><span>${esc(d.n)}-bob${d.ctitle ? " — " + esc(d.ctitle) : ""}</span></div>
+    <span class="rd-pg" id="rdPg">1/${d.pages.length}</span></div>
+  <div class="rd" id="rd">${d.pages.map((u, i) => `<img class="pg" src="${esc(u)}" ${i < 3 ? 'fetchpriority="high"' : 'loading="lazy"'} decoding="async" data-i="${i}" referrerpolicy="no-referrer" alt="">`).join("")}</div>
+  <div class="rd-end"><h3>✅ ${esc(d.n)}-bob tugadi</h3><p>${d.credit ? "✍️ " + esc(d.credit) : "Yoqdimi? Baho qo‘yishni unutmang ⭐"}</p>
+  <div class="rd-nav">${d.prev ? `<button class="btn ghost" data-ch="${esc(code)}/${esc(d.prev)}">⬅️ ${esc(d.prev)}-bob</button>` : ""}
+  ${d.next ? `<button class="btn" data-ch="${esc(code)}/${esc(d.next)}">${esc(d.next)}-bob ➡️</button>` : ""}</div>
+  ${d.next ? "" : `<p style="margin:14px 0 10px">Bu oxirgi bob. Yangisi chiqqanda xabar olasizmi?</p>
+  <button class="btn ${d.follow ? "ghost" : ""} block" data-act="follow" data-code="${esc(code)}" data-reader="1">${d.follow ? "🔔 Kuzatyapsiz" : "🔔 Kuzatish"}</button>`}
+  <button class="btn ghost block" data-act="rate" data-code="${esc(code)}" style="margin-top:8px">⭐ Baho berish</button>
+  <button class="btn ghost block" data-go="m/${esc(code)}" style="margin-top:8px">📚 Manga sahifasi</button></div>`;
+  setupReader(d);
+}
+function setupReader(d) {
+  const top = $("rdTop"), pg = $("rdPg"), imgs = Array.from(document.querySelectorAll(".pg"));
+  imgs.forEach(im => {
+    im.addEventListener("load", () => im.classList.add("ok"));
+    im.addEventListener("error", () => {
+      if (!im.dataset.retry) { im.dataset.retry = "1"; setTimeout(() => { im.src = im.src + (im.src.includes("?") ? "&" : "?") + "r=1"; }, 1500); }
+      else { im.classList.add("err"); }
+    });
+  });
+  const obs = new IntersectionObserver(es => {
+    es.forEach(e => { if (e.isIntersecting) pg.textContent = (+e.target.dataset.i + 1) + "/" + imgs.length; });
+  }, {rootMargin: "-45% 0px -45% 0px"});
+  imgs.forEach(im => obs.observe(im));
+  let lastY = window.scrollY;
+  const onScroll = () => { const y = window.scrollY; if (Math.abs(y - lastY) > 12) { top.classList.toggle("hide", y > lastY && y > 80); lastY = y; } };
+  window.addEventListener("scroll", onScroll, {passive: true});
+  $("rd").addEventListener("click", () => top.classList.toggle("hide"));
+  S.reader = {obs, off: () => window.removeEventListener("scroll", onScroll)};
+}
+function updateContinue(code, d) {
+  const b = S.boot, m = byCode(code); if (!m) return;
+  b.continue = [{code, title: m.title, cover: m.cover, num: d.num, n: d.n, next: d.next, total: m.chapters}].concat(b.continue.filter(c => c.code !== code));
+}
+function lockedHtml(code, n, info) {
+  setTimeout(() => lockedSheet(code, n, info), 50);
+  return `<div class="center"><div class="e">🔒</div><h3>${esc(n)}-bob pullik</h3><p>Ochish uchun ${info.price || "?"} 🪙 kerak.</p>
+  <button class="btn" data-act="lock" data-code="${esc(code)}" data-n="${esc(n)}" data-price="${info.price || 0}">🔓 Ochish</button></div>`;
+}
+
+/* ---------- oynalar ---------- */
+let sheetCb = null;
+function sheet(html) {
+  closeSheet(true);
+  const bk = document.createElement("div"); bk.className = "back"; bk.id = "sbk";
+  const sh = document.createElement("div"); sh.className = "sheet"; sh.id = "sht"; sh.innerHTML = `<div class="grab"></div>` + html;
+  bk.addEventListener("click", () => closeSheet());
+  document.body.append(bk, sh);
+  requestAnimationFrame(() => { bk.classList.add("show"); sh.classList.add("show"); });
+}
+function closeSheet(now) {
+  const bk = $("sbk"), sh = $("sht"); if (!sh) return;
+  if (now) { bk.remove(); sh.remove(); return; }
+  bk.classList.remove("show"); sh.classList.remove("show");
+  setTimeout(() => { bk.remove(); sh.remove(); }, 250);
+}
+function lockedSheet(code, n, info) {
+  const bal = S.boot.me.jetons, price = info.price || 0, vip = S.boot.me.vip;
+  hap("medium");
+  sheet(`<div class="big">🔒</div><h3>${esc(n)}-bob pullik</h3>
+  <p>Narxi: <b style="color:var(--gold)">${price} 🪙</b> · Balansingiz: <b>${bal} 🪙</b>${vip ? "" : "<br>💎 VIP bilan barcha pullik boblar ochiq"}</p>
+  ${bal >= price ? `<button class="btn" data-act="buy" data-code="${esc(code)}" data-n="${esc(n)}">🔓 ${price} 🪙 ga ochish</button>`
+    : `<button class="btn" data-act="shop">🪙 Jeton olish</button>`}
+  <button class="btn ghost" data-act="vip">💎 VIP haqida</button>
+  <button class="btn ghost" data-act="close">Yopish</button>`);
+}
+function rateSheet(code) {
+  const d = S.manga[code] && S.manga[code].d, m = d ? d.manga : byCode(code) || {};
+  if (d && !m.can_rate) { toast("Avval kamida bitta bobni o‘qing — keyin baho bera olasiz 🙂"); hap("err"); return; }
+  let cur = m.mine || 0;
+  sheet(`<h3>⭐ Baho bering</h3><p>${esc(m.title || "")}</p><div class="stars" id="stars">${[1, 2, 3, 4, 5].map(i => `<button data-star="${i}" class="${i <= cur ? "on" : ""}">⭐</button>`).join("")}</div>
+  <button class="btn" data-act="ratesave" data-code="${esc(code)}">Saqlash</button>`);
+  $("stars").addEventListener("click", e => {
+    const b = e.target.closest("[data-star]"); if (!b) return;
+    cur = +b.dataset.star; $("stars").dataset.v = cur; hap("light");
+    $("stars").querySelectorAll("button").forEach(x => x.classList.toggle("on", +x.dataset.star <= cur));
+  });
+  $("stars").dataset.v = cur;
+}
+function subScreen(list, after) {
+  V.innerHTML = `<div class="center"><div class="e">📢</div><h3>Kanalga obuna bo‘ling</h3>
+  <p>Mangalarni o‘qish uchun quyidagi kanal${list.length > 1 ? "lar" : ""}ga obuna bo‘ling, so‘ng «Tekshirish» ni bosing.</p>
+  <div class="subs">${list.map(c => `<button class="btn ghost" data-act="openlink" data-url="${esc(c.url)}">📢 ${esc(c.title)}</button>`).join("")}
+  <button class="btn" data-act="subcheck">✅ Tekshirish</button></div></div>`;
+  S.afterSub = after;
+}
+function errHtml(e) {
+  return `<div class="center"><div class="e">😕</div><h3>Xatolik</h3><p>${esc(e && e.message || "Nimadir noto‘g‘ri ketdi")}</p>
+  <button class="btn" data-act="retry">🔄 Qayta urinish</button></div>`;
+}
+
+/* ---------- reyting ---------- */
+const PERIODS = [["week", "Hafta"], ["month", "Oy"], ["all", "Barcha"], ["stars", "⭐ Baho"]];
+const PHINT = {week: "So‘nggi 7 kunda nechta odam o‘qigani bo‘yicha", month: "So‘nggi 30 kunda nechta odam o‘qigani bo‘yicha",
+  all: "Umumiy ko‘rishlar bo‘yicha", stars: "O‘quvchilar qo‘ygan yulduzlar bo‘yicha"};
+function rkItem(it, p) {
+  const no = it.rank <= 3 ? `m${it.rank}` : "";
+  let dl = "";
+  if (p === "week" || p === "month") dl = it.new ? `<span class="dl nw2">YANGI</span>` : it.delta > 0 ? `<span class="dl up">▲ ${it.delta}</span>` : it.delta < 0 ? `<span class="dl dn">▼ ${-it.delta}</span>` : `<span class="dl" style="color:var(--dim)">—</span>`;
+  const val = p === "stars" ? `⭐ ${(+it.value).toFixed(1)}<span class="dl" style="color:var(--muted)">${it.votes} baho</span>` : `👁 ${num(it.value)}${dl}`;
+  return `<div class="rk" data-go="m/${it.code}"><div class="no ${no}">${it.rank <= 3 ? ["🥇", "🥈", "🥉"][it.rank - 1] : it.rank}</div>
+  <div class="cv">${img(it.cover, it.title)}</div><div class="m"><div class="t">${esc(it.title)}</div><div class="s">${esc((it.genres || []).join(" · "))}</div></div>
+  <div class="v">${val}</div></div>`;
+}
+async function vTop() {
+  const p = S.period;
+  const head = `<div class="seg">${PERIODS.map(([k, t]) => `<button class="${k === p ? "on" : ""}" data-period="${k}">${t}</button>`).join("")}</div><div class="hint">${PHINT[p]}</div>`;
+  const c = S.rating[p];
+  V.innerHTML = head + (c ? c.html : `<div class="list">${'<div class="skel" style="height:70px"></div>'.repeat(6)}</div>`);
+  if (c && Date.now() - c.t < 60000) return;
+  try {
+    const d = await api("rating", {period: p});
+    const html = d.items.length ? d.items.map(it => rkItem(it, p)).join("") + `<div style="height:16px"></div>`
+      : `<div class="empty"><div class="e">📊</div>Hozircha ma’lumot yo‘q — o‘qishlar ko‘paygani sari reyting to‘ladi.</div>`;
+    S.rating[p] = {t: Date.now(), html};
+    if (S.nav[S.nav.length - 1] === "top" && S.period === p) V.innerHTML = head + html;
+  } catch (e) { if (!c) V.innerHTML = head + errHtml(e); }
+}
+
+/* ---------- profil ---------- */
+function vMe() {
+  const me = S.boot.me;
+  const vipTill = me.vip ? new Date(me.vip_until * 1000).toLocaleDateString("ru-RU") + " gacha" : "barcha boblar ochiq bo‘ladi";
+  const head = `<div class="prof"><div class="av">${me.photo ? `<img src="${esc(me.photo)}" alt="">` : initials(me.name)}</div>
+  <div><h2>${esc(me.name || "Foydalanuvchi")}</h2><div class="u">${me.username ? "@" + esc(me.username) + " · " : ""}ID ${me.id}</div></div></div>
+  <div class="cards"><div class="card"><div class="k">🪙 Jetonlar</div><div class="v">${me.jetons}<span class="k" style="display:block;font-size:11.5px;font-weight:500;margin-top:2px">pullik boblarni ochish uchun</span></div><button class="btn sm block" data-act="shop">Jeton olish</button></div>
+  <div class="card"><div class="k">💎 VIP</div><div class="v">${me.vip ? "Faol" : "Yo‘q"}<span class="k" style="display:block;font-size:11.5px;font-weight:500;margin-top:2px">${vipTill}</span></div><button class="btn sm ghost block" data-act="vip">${me.vip ? "Uzaytirish" : "VIP olish"}</button></div></div>`;
+  V.innerHTML = head + `<div id="meRest">${meRest(S.me)}</div>`;
+  api("me").then(d => {
+    S.me = d; S.boot.me = d.me;
+    if (S.nav[S.nav.length - 1] === "me") { const el = $("meRest"); if (el) el.innerHTML = meRest(d); }
+  }).catch(() => {});
+}
+function meRest(d) {
+  if (!d) return `<div class="list" style="margin-top:14px">${'<div class="skel" style="height:70px"></div>'.repeat(3)}</div>`;
+  let h = "";
+  if (d.continue.length) h += sec("🕘 O‘qish tarixi", d.continue.map(c => `<div class="upd" data-go="m/${c.code}"><div class="cv">${img(c.cover, c.title)}</div>
+    <div class="m"><div class="t">${esc(c.title)}</div><div class="s">${esc(c.n)}-bob o‘qildi${c.next ? ` · keyingisi ${esc(c.next)}-bob` : ""}</div></div>
+    ${c.next ? `<span class="btn sm" data-ch="${esc(c.code)}/${esc(c.next)}">▶️</span>` : ""}</div>`).join(""), "list");
+  if (d.favs.length) h += sec("❤️ Sevimlilar", d.favs.map(m => mini(m, m.chapters ? m.chapters + " bob" : "")).join(""), "row");
+  if (!h) h = `<div class="empty"><div class="e">📚</div>Hali hech narsa o‘qimadingiz.<br>Katalogdan boshlang!</div>`;
+  return h + `<div class="wrap" style="margin:22px 0 10px"><button class="btn ghost block" data-act="openlink" data-url="${esc(botLink(""))}">🤖 Botga o‘tish</button></div>`;
+}
+
+/* ---------- tugmalar ---------- */
+async function toggle(kind, code, el) {
+  hap("light");
+  try {
+    const r = await api(kind, {code}, true);
+    const mc = S.manga[code]; if (mc) mc.d.manga[kind] = r.on;
+    const list = kind === "fav" ? S.boot.me.favs : S.boot.me.follows;
+    const i = list.indexOf(code); if (r.on && i < 0) list.push(code); if (!r.on && i >= 0) list.splice(i, 1);
+    toast(kind === "fav" ? (r.on ? "❤️ Sevimlilarga qo‘shildi" : "Sevimlilardan olindi") : (r.on ? "🔔 Yangi bob chiqqanda xabar beramiz" : "🔕 Kuzatish to‘xtatildi"));
+    if (el && el.dataset.reader) { el.textContent = r.on ? "🔔 Kuzatyapsiz" : "🔔 Kuzatish"; el.classList.toggle("ghost", r.on); }
+    else if (mc && S.nav[S.nav.length - 1] === "m/" + code) { const y = window.scrollY; V.innerHTML = mangaHtml(mc.d); window.scrollTo(0, y); }
+  } catch (e) { toast(e.message); hap("err"); }
+}
+document.addEventListener("click", async e => {
+  const el = e.target.closest("[data-go],[data-tab],[data-act],[data-ch],[data-g],[data-genre],[data-sort],[data-st],[data-period]");
+  if (!el || el.disabled) return;
+  const ds = el.dataset;
+  if (ds.tab) { hap("light"); tab(ds.tab); return; }
+  if (ds.go) { hap("light"); go(ds.go); return; }
+  if (ds.ch) { e.stopPropagation(); hap("light"); const [code, n] = ds.ch.split("/"); openChapter(code, n); return; }
+  if (ds.genre !== undefined) { S.f.g = ds.genre; S.f.q = ""; tab("catalog"); return; }
+  if (ds.g !== undefined) { S.f.g = ds.g; V.innerHTML = vCatalog(); bindSearch(); return; }
+  if (ds.sort) { S.f.sort = ds.sort; V.innerHTML = vCatalog(); bindSearch(); return; }
+  if (ds.st !== undefined) { S.f.st = S.f.st === ds.st ? "" : ds.st; V.innerHTML = vCatalog(); bindSearch(); return; }
+  if (ds.period) { S.period = ds.period; hap("light"); vTop(); return; }
+  const a = ds.act;
+  if (a === "back") back();
+  else if (a === "close") closeSheet();
+  else if (a === "retry") render(true);
+  else if (a === "fav" || a === "follow") toggle(a, ds.code, el);
+  else if (a === "rate") rateSheet(ds.code);
+  else if (a === "desc") { const d = $("desc"); if (d) { d.classList.toggle("cut"); el.textContent = d.classList.contains("cut") ? "Batafsil ▾" : "Yig‘ish ▴"; } }
+  else if (a === "sort") { S.desc = !S.desc; const mc = S.manga[(S.nav[S.nav.length - 1] || "").split("/")[1]]; if (mc) { const y = window.scrollY; V.innerHTML = mangaHtml(mc.d); window.scrollTo(0, y); } }
+  else if (a === "share") {
+    const m = byCode(ds.code) || {title: ""};
+    openTg("https://t.me/share/url?url=" + encodeURIComponent(botLink(ds.code)) + "&text=" + encodeURIComponent("📖 " + m.title + " — o‘zbek tilida o‘qing!"));
+  }
+  else if (a === "lock") lockedSheet(ds.code, ds.n, {price: +ds.price});
+  else if (a === "buy") {
+    el.disabled = true;
+    try {
+      const r = await api("buy", {code: ds.code, num: ds.n}, true);
+      S.boot.me.jetons = r.balance; hap("ok"); toast(`✅ Bob ochildi! Qoldiq: ${r.balance} 🪙`); closeSheet();
+      const mc = S.manga[ds.code]; if (mc) { const c = mc.d.chapters.find(x => x.n === ds.n); if (c) c.open = true; }
+      const cur = S.nav[S.nav.length - 1];
+      if (cur === `r/${ds.code}/${ds.n}`) render(false); else go(`r/${ds.code}/${ds.n}`);
+    } catch (err) { el.disabled = false; hap("err"); toast(err.message); }
+  }
+  else if (a === "ratesave") {
+    const v = +($("stars").dataset.v || 0);
+    if (!v) { toast("Yulduzni tanlang"); return; }
+    try {
+      const r = await api("rate", {code: ds.code, stars: v}, true);
+      hap("ok"); toast(`Rahmat! Bahoyingiz: ${v} ⭐`); closeSheet();
+      const mc = S.manga[ds.code]; if (mc) { Object.assign(mc.d.manga, {stars: r.stars, votes: r.votes, mine: v}); if (S.nav[S.nav.length - 1] === "m/" + ds.code) { const y = window.scrollY; V.innerHTML = mangaHtml(mc.d); window.scrollTo(0, y); } }
+      const bm = byCode(ds.code); if (bm) { bm.stars = r.stars; bm.votes = r.votes; }
+      S.rating = {};
+    } catch (err) { hap("err"); toast(err.message); }
+  }
+  else if (a === "readbot") {
+    el.disabled = true;
+    try { await api("readbot", {code: ds.code, num: ds.n}, true); toast("📨 Bob botga yuborildi"); setTimeout(() => { try { tg.close(); } catch (x) {} }, 700); }
+    catch (err) { el.disabled = false; toast(err.message); }
+  }
+  else if (a === "shop" || a === "vip") { openTg(botLink(a)); }
+  else if (a === "openlink") { openTg(ds.url); }
+  else if (a === "subcheck") {
+    try {
+      const r = await api("subcheck", {}, true);
+      if (r.ok) { hap("ok"); toast("Rahmat! ✅"); S.boot.need_sub = []; const f = S.afterSub; S.afterSub = null; if (f) f(); else tab("home"); }
+      else { hap("err"); toast("Hali obuna bo‘lmagansiz 🙂"); }
+    } catch (err) { toast(err.message); }
+  }
+});
+
+/* ---------- ishga tushirish ---------- */
+function startRoute(b) {
+  const q = new URLSearchParams(location.search);
+  let sp = b.start || q.get("tgWebAppStartParam") || "";
+  if (q.get("m")) sp = "m" + q.get("m"); else if (q.get("c")) sp = "c" + q.get("c"); else if (q.get("p")) sp = q.get("p");
+  let mt;
+  if (sp === "top" || sp === "catalog" || sp === "me") return [sp];
+  if ((mt = /^c?(\d+)[_-](\d+(?:[.-]\d+)?)$/.exec(sp))) return ["home", "m/" + mt[1], "r/" + mt[1] + "/" + mt[2].replace("-", ".")];
+  if ((mt = /^m?(\d+)$/.exec(sp))) return ["home", "m/" + mt[1]];
+  return ["home"];
+}
+async function start() {
+  try { tg.ready(); tg.expand(); } catch (e) {}
+  try { if (ver("6.1")) { tg.setHeaderColor("#0b0b10"); tg.setBackgroundColor("#0b0b10"); } if (ver("7.10")) tg.setBottomBarColor("#101017"); } catch (e) {}
+  try { if (ver("7.7")) tg.disableVerticalSwipes(); } catch (e) {}
+  try { tg.BackButton.onClick(back); } catch (e) {}
+  if (!tg.initData) {
+    $("boot").innerHTML = `<div class="logo" style="font-size:30px">MANHORA</div><p>Ilova Telegram ichida ochiladi.</p><a class="btn" href="https://t.me/ManhoraBot">🤖 Botni ochish</a>`;
+    return;
+  }
+  const msg = $("bootMsg"), slow = setTimeout(() => { msg.textContent = "Server uyg‘onmoqda… Bepul serverda birinchi ochilish 1 daqiqagacha cho‘zilishi mumkin ⏳"; }, 3500);
+  let b = null, err = null;
+  for (let i = 0; i < 8 && !b; i++) {
+    try { b = await api("boot"); }
+    catch (e) { err = e; if (e.status && e.status < 500 && e.status !== 429) break; await new Promise(r => setTimeout(r, 4000)); }
+  }
+  clearTimeout(slow);
+  if (!b) {
+    $("boot").innerHTML = `<div class="e" style="font-size:44px">😕</div><p>${esc(err && err.message || "Serverga ulanib bo‘lmadi")}</p><button class="btn" onclick="location.reload()">🔄 Qayta urinish</button>`;
+    return;
+  }
+  S.boot = b;
+  $("boot").remove();
+  S.nav = startRoute(b);
+  if (b.need_sub && b.need_sub.length) { subScreen(b.need_sub, () => render(false)); document.querySelectorAll(".tabs button").forEach(x => x.classList.remove("on")); return; }
+  render(false);
+}
+start();
+</script>
+</body>
+</html>

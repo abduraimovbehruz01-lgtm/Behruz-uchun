@@ -342,6 +342,12 @@ class Catalog:
             meta.update(title=old.get("title") or title, price=int(old.get("price") or 0),
                         published=bool(old.get("published")), created=old.get("created") or meta["created"],
                         sched=old.get("sched"), sched_price=old.get("sched_price"), sched_by=old.get("sched_by"))
+        if published and not (old and old.get("published")):
+            meta["pub"] = meta["created"]
+        elif old and old.get("pub"):
+            meta["pub"] = old["pub"]
+        if old and old.get("thumb") is not None:
+            meta["thumb"] = None          # sahifalar yangilandi — kichik rasm qayta yasaladi
         if fp:
             await self.chapter_fps(code)
             self.fps[code][cid] = fp
@@ -361,7 +367,7 @@ class Catalog:
         cid = chapter_id(code, num)
         await self.s.set("chapters", cid, {"pages": list(pages), "pdf": None})
         self.pages[cid] = {"pages": list(pages), "pdf": None}
-        await self.set_chapter(code, num, pages=len(pages))
+        await self.set_chapter(code, num, pages=len(pages), thumb=None)
 
     def drafts(self, code):
         return [c for c in self.chapter_list(code, unpublished=True) if not c.get("published")]
@@ -451,6 +457,8 @@ class Catalog:
         cid = chapter_id(code, num)
         meta = m["chapters"][cid]
         newly = fields.get("published") and not meta.get("published")
+        if newly:
+            fields = dict(fields, pub=time.time())        # chop etilgan vaqt — ilovadagi «Yangi boblar» uchun
         meta.update(fields)
         upd = {"chapters": {cid: fields}}
         if newly:

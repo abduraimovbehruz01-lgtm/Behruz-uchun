@@ -116,7 +116,8 @@ def install():
     mod("aiogram.types", BotCommand=Rec, BufferedInputFile=Rec, CallbackQuery=CallbackQuery, FSInputFile=Rec,
         InlineKeyboardButton=Rec, InlineKeyboardMarkup=Rec, Message=object, ReplyParameters=Rec, InputMediaPhoto=Rec,
         KeyboardButton=Rec, ReplyKeyboardMarkup=Rec, ChatMemberUpdated=object, ReplyKeyboardRemove=Rec,
-        KeyboardButtonRequestUsers=Rec, KeyboardButtonRequestChat=Rec, ChatAdministratorRights=Rec)
+        KeyboardButtonRequestUsers=Rec, KeyboardButtonRequestChat=Rec, ChatAdministratorRights=Rec,
+        WebAppInfo=Rec, MenuButtonWebApp=Rec)
     mod("aiogram.webhook"); mod("aiogram.webhook.aiohttp_server", SimpleRequestHandler=Rec, setup_application=lambda *a, **k: None)
 
 class User:
@@ -135,4 +136,5 @@ class Msg:
 
 def buttons(markup):
     if markup is None: return []
-    return [b.k.get("callback_data") or b.k.get("url") for row in markup.k["inline_keyboard"] for b in row]
+    return [b.k.get("callback_data") or b.k.get("url") or ("app:" + b.k["web_app"].k.get("url", ""))
+            for row in markup.k["inline_keyboard"] for b in row]

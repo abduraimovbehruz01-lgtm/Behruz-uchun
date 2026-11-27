@@ -69,6 +69,21 @@ async def loop():
             await autosrc.tick()          # hamkor kanallardan kelgan albomlarni yopish va navbatni ishga tushirish
         except Exception:
             log.exception("avto-manbalar")
+        try:
+            import traffic
+            await traffic.tick()          # oylik trafik: saqlash va ogohlantirish
+        except Exception:
+            log.exception("trafik")
+        try:
+            import thumbs
+            await thumbs.tick()           # ilova uchun kichik rasmlar
+        except Exception:
+            log.exception("kichik rasmlar")
+        try:
+            import rating
+            await rating.refresh()        # reyting keshi (10 daqiqada bir)
+        except Exception:
+            log.exception("reyting")
         await asyncio.sleep(CHECK_EVERY)
 
 

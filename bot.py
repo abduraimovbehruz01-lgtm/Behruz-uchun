@@ -8,6 +8,9 @@ Qismlar:
   scheduler.py — rejalashtirilgan boblarni vaqtida chop etish
   autosrc.py   — hamkor kanallar: u yerga tashlangan boblarni avtomatik olish, tarjima qilish va chop etish
   promo.py     — yangi bob e'loni: kuzatuvchilarga xabar va reklama kanaliga post
+  webapp.py    — Mini App (ilova): sahifa va API; rasmlar Cloudflare Worker (worker/) orqali
+  rating.py    — reyting (noyob o'quvchilar, baholar); thumbs.py — ilova uchun kichik rasmlar
+  traffic.py   — oylik chiquvchi trafik hisobi va chegarasi (Render bepul tarifi: oyiga 5 GB)
   tools.py     — adminlar uchun tezkor tarjima (sahifa/fayl yuborsa — tarjima qilib qaytaradi)
   core.py      — umumiy sozlamalar; catalog.py — katalog mantiqi; store.py — Firebase/xotira
   translator.py, typeset.py, chapters.py — tarjima, rasmga yozish, PDF/ZIP
@@ -34,11 +37,14 @@ import reader
 import scheduler
 import staff
 import tools
+import traffic
 import typeset
 import translator
+import webapp
 from core import CAT, GEM, PORT, PUBLIC_URL, STATE, TEST_KEY, TOKEN, bot, http, log, tell_owners, translate_image
 
 dp = Dispatcher()
+GEM.meter = traffic.add          # Gemini'ga yuborilgan sahifalar trafik hisobiga kiradi
 for r in (admin.router, staff.router, editor.router, autosrc.router, tools.router, reader.router):
     r.message.filter(F.chat.type == "private")
     dp.include_router(r)
@@ -89,6 +95,7 @@ async def on_startup():
         await CAT.load()
         log.info("Katalog yuklandi: %d manga, %d admin", len(CAT.manga), len(CAT.admins))
         await autosrc.load()
+        await traffic.load()
         if autosrc.QUEUE or autosrc.ALBUMS:
             log.info("Hamkor manbalar navbati: %d bob, %d albom", len(autosrc.QUEUE), len(autosrc.ALBUMS))
     except Exception as e:
@@ -107,22 +114,26 @@ async def on_startup():
         log.info("Telegram bot ulandi: @%s", me.username)
     except Exception as e:
         log.error("Telegram bilan aloqa yo‘q yoki token noto‘g‘ri: %s", e)
+    await webapp.set_menu_button()
 
 
 async def on_shutdown():
+    await traffic.save()
     if STATE["http"] is not None:
         await STATE["http"].close()
 
 
 def main():
-    app = web.Application(client_max_size=16 * 1024 * 1024)
+    app = web.Application(client_max_size=16 * 1024 * 1024, middlewares=[traffic.http_middleware()])
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
     app.router.add_post("/sinov", sinov)
+    webapp.setup(app)
     if bot is None:
         log.error("BOT_TOKEN kiritilmagan yoki noto‘g‘ri — Render → Environment bo‘limida BOT_TOKEN ni qo‘shing.")
         web.run_app(app, host="0.0.0.0", port=PORT)
         return
+    traffic.install(bot)
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
     if PUBLIC_URL:

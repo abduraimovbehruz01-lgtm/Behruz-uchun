@@ -186,6 +186,7 @@ class Translator:
         self.plain: set[str] = set()         # qo'shimcha sozlamalarni qabul qilmaydigan modellar
         self.last_good: str | None = None
         self.status = "tekshirilmagan"
+        self.meter = None                    # trafik hisoblagichi: meter(baytlar)
 
     def _headers(self):
         return {"x-goog-api-key": self.key, "Content-Type": "application/json"}
@@ -227,9 +228,15 @@ class Translator:
         if extra:
             gen["thinkingConfig"] = {"thinkingLevel": "low"}
             gen["mediaResolution"] = "MEDIA_RESOLUTION_HIGH"
+        b64 = base64.b64encode(jpeg).decode()
+        if self.meter is not None:          # trafik hisobi (rasm + ko'rsatma + sozlamalar)
+            try:
+                self.meter(len(b64) + len(prompt.encode("utf-8", "ignore")) + 3000)
+            except Exception:
+                pass
         body = {
             "contents": [{"role": "user", "parts": [
-                {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(jpeg).decode()}},
+                {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
                 {"text": prompt},
             ]}],
             "generationConfig": gen,

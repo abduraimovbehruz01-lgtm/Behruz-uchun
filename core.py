@@ -15,6 +15,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import (BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, KeyboardButton,
+                           WebAppInfo,
                            ReplyKeyboardMarkup, ReplyKeyboardRemove, ReplyParameters)
 
 import catalog
@@ -85,13 +86,17 @@ def rp(msg) -> ReplyParameters:
 
 
 def kb(rows) -> InlineKeyboardMarkup:
-    """[[("matn", "callback"), ...], ...] → inline klaviatura. URL uchun ("matn", "url:https://...")."""
+    """[[("matn", "callback"), ...], ...] → inline klaviatura. URL uchun ("matn", "url:https://..."),
+    ilovani ochish uchun ("matn", "app:?m=101") — PUBLIC_URL bo'lmasa bunday tugma qo'shilmaydi."""
     out = []
     for row in rows:
         r = []
         for text, data in row:
             if data.startswith("url:"):
                 r.append(InlineKeyboardButton(text=text, url=data[4:]))
+            elif data.startswith("app:"):
+                if PUBLIC_URL:
+                    r.append(InlineKeyboardButton(text=text, web_app=WebAppInfo(url=PUBLIC_URL + "/app" + data[4:])))
             else:
                 r.append(InlineKeyboardButton(text=text, callback_data=data))
         if r:

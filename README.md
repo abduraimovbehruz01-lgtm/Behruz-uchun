@@ -9,6 +9,11 @@ boblarni yuklaydi (kerak bo‘lsa bot ularni o‘zi tarjima qiladi).
 - 📖 Botda o‘qish: sahifalar albom bo‘lib keladi, «Keyingi bob» tugmasi, 📄 PDF qilib olish.
 - ❤️ Sevimlilar, 🔔 kuzatish (yangi bob chiqsa xabar), ▶️ qolgan joydan davom ettirish.
 - 🔒 Pullik boblar jeton bilan ochiladi (pullik boblar forward/saqlashdan himoyalangan), 💎 VIP.
+- 🏆 **Reyting** hammaga ochiq: hafta / oy (noyob o‘quvchilar — bir odam kuniga bir marta sanaladi), barcha vaqt,
+  ⭐ baholar; o‘rin o‘zgarishi ↑↓. Kamida bitta bob o‘qigan odam mangaga 1–5 yulduz qo‘yadi.
+- 📱 **Ilova (Mini App)** — pastdagi «Menu» tugmasi yoki «📱 Ilovani ochish»: banner, yangi boblar, top, katalog
+  (qidiruv, janr, saralash), manga sahifasi va **muqovali boblar to‘ri** (🔒 narx, ✓ o‘qilgan), pastga surib o‘qish,
+  reyting, profil (jeton, VIP, tarix, sevimlilar). Qorong‘i dizayn, o‘zbekcha.
 
 ## Admin uchun (`/admin`)
 - Manga qo‘shish (nomi, tavsif, janr, muqova, kod) va tahrirlash, holati (🟢 davom etmoqda / ✅ tugagan /
@@ -36,6 +41,9 @@ boblarni yuklaydi (kerak bo‘lsa bot ularni o‘zi tarjima qiladi).
 - **✍️ Tarjimon yozuvi**: manga yoki bob uchun «Tarjima: … jamoasi» — kartada, o‘qishda va reklama postida ko‘rinadi.
 - Botni yangi kanalga qo‘shsangiz, bot kanal nima uchun ekanini so‘raydi: ombor, majburiy obuna, reklama yoki
   hamkor manba. Begona odam botni o‘z kanaliga qo‘shsa — bosh adminga «manba qilib ulash» tugmasi bilan xabar keladi.
+- **⭐ Ilova banneri**: manga sozlamasida «⭐ Ilova banneriga» — bosh sahifadagi katta kartochkalar (6 tagacha).
+- **📶 Trafik**: «📊 Statistika» da shu oy sarflangan trafik va chegara (1–4 GB); chegaraga yetganda avto-manba
+  to‘xtaydi, 80% va 100% da bosh adminga xabar.
 - Rasmlar ombori: yopiq kanal oching va botni unga admin qiling — bot o‘zi aniqlaydi.
 - Sahifa yoki fayl yuborsangiz — tarjima qilib qaytaradi (tezkor tarjima, faqat adminlar uchun).
 
@@ -43,6 +51,8 @@ boblarni yuklaydi (kerak bo‘lsa bot ularni o‘zi tarjima qiladi).
 `bot.py` (ishga tushirish), `reader.py` (o‘quvchilar), `admin.py` (admin panel, bob yuklash, chop etish),
 `staff.py` (adminlar, jurnal, majburiy obuna, reklama kanali), `editor.py` (bob tahriri, glossariy),
 `scheduler.py` (rejadagi boblar), `autosrc.py` (hamkor kanallar), `promo.py` (yangi bob e’loni), `tools.py` (tezkor tarjima),
+`webapp.py` + `webapp/index.html` (ilova va uning API’si), `rating.py` (reyting), `thumbs.py` (ilova uchun kichik rasmlar),
+`traffic.py` (trafik hisobi), `worker/` (Cloudflare rasmlar xizmati),
 `catalog.py` (katalog mantiqi), `store.py` (Firebase / xotira), `core.py` (umumiy), `translator.py`, `typeset.py`,
 `chapters.py` (tarjima, rasmga yozish, PDF/ZIP).
 
@@ -55,6 +65,21 @@ boblarni yuklaydi (kerak bo‘lsa bot ularni o‘zi tarjima qiladi).
 | `OWNER_IDS` | bosh admin(lar) Telegram ID si |
 | `REQUIRED_CHANNEL` | majburiy obuna kanali, masalan `@kanalim` (ixtiyoriy) |
 | `STORAGE_CHAT` | rasmlar ombori kanali (odatda bot o‘zi aniqlaydi) |
+
+## Ilova rasmlari (Cloudflare)
+Render bepul tarifida butun hisob uchun oyiga atigi **5 GB** chiquvchi trafik bor — ilova rasmlarni Render orqali bersa,
+tezda tugaydi va barcha botlar to‘xtab qoladi. Shuning uchun bob sahifalari **Cloudflare Worker** (bepul) orqali
+beriladi: bot imzolangan vaqtinchalik havola beradi, Worker rasmni Telegram’dan olib ko‘rsatadi.
+
+Bir martalik sozlash:
+1. cloudflare.com da bepul hisob oching va «Workers & Pages» bo‘limini bir marta oching.
+2. My Profile → API Tokens → Create Token → «Edit Cloudflare Workers» shabloni → tokenni nusxalang.
+3. GitHub → repo → Settings → Secrets and variables → Actions → New repository secret:
+   `CLOUDFLARE_API_TOKEN` (2-qadamdagi token) va `BOT_TOKEN` (@BotFather tokeni).
+4. `worker/` ichidagi biror o‘zgarish `manga-tarjima` ga push qilinsa (yoki Actions’da oxirgi ishga tushirishni
+   «Re-run» qilinsa), Worker joylanadi va botga o‘zi ulanadi — bosh adminga «🖼 Cloudflare ulandi!» xabari keladi.
+
+Cloudflare ulanmaguncha ilova ishlayveradi: bob tanlansa, u botga yuboriladi.
 
 ## Tarjima qanday ishlaydi
 1. `translator.py` — Google Gemini sahifani ko‘radi: har bir pufakning joyi (box_2d), asl matni va tarjimasini qaytaradi.
@@ -69,6 +94,9 @@ boblarni yuklaydi (kerak bo‘lsa bot ularni o‘zi tarjima qiladi).
   Hamkor kanaldagi 20 MB dan katta fayl ham avtomatik olinmaydi (bot adminga shu haqda yozadi).
 - Hamkor manba faqat **ruxsat bilan**: kim, qachon, qanday ruxsat bergani manba kartasida saqlanadi.
 - Gemini bepul limiti kunlik; har sahifa = 1 so‘rov (uzun webtoon — bir nechta). Limit kalitga emas, Google loyihasiga bog‘langan.
+- Render bepul tarifida oyiga 5 GB chiquvchi trafik (barcha xizmatlar uchun); karta qo‘shilmagan bo‘lsa, oshib ketsa
+  hamma xizmatlar oy oxirigacha to‘xtaydi. Tarjima sahifasiga ~1 MB sarflaydi.
+- Ilovada skrinshotni to‘liq to‘sib bo‘lmaydi (botda pullik boblar forward/saqlashdan himoyalangan).
 - Render bepul tarifida server 15 daqiqa ishlatilmasa uxlaydi — birinchi javob ~1 daqiqa kechikadi.
   Rejadagi bob: server uyg‘oq bo‘lsa — aniq vaqtida chiqadi (yaqin 20 daqiqada bob bo‘lsa, bot o‘zini uyg‘oq tutadi);
   uxlab yotgan bo‘lsa — keyingi uyg‘onganda. Aniq vaqtda chiqishi uchun tashqi «uyg‘otuvchi» kerak: har kuni

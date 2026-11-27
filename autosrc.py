@@ -365,6 +365,9 @@ async def process(it) -> str:
             await notify(src, "📦 Rasmlar ombori kanali ulanmagan — hamkor kanaldan kelgan bob navbatda turibdi. "
                               "Yopiq kanal oching va botni unga admin qiling.")
         return "retry"
+    import traffic
+    if traffic.over():
+        return "later"          # oylik trafik chegarasi — ertaga (yoki keyingi oy) qayta tekshiriladi
     today = catalog.today()
     if STATE["day"] != today:
         STATE["day"], STATE["done"] = today, 0
@@ -475,6 +478,9 @@ def sources_view():
         lines.append("\nHozircha manba yo‘q.")
     if QUEUE:
         lines.append(f"\n⏳ Navbatda: {len(QUEUE)} ta bob")
+    import traffic
+    if traffic.over():
+        lines.append("⏸ Oylik trafik chegarasiga yetildi — avtomatik olish keyingi oygacha to‘xtatilgan.")
     rows = [[(f"⚙️ {i}. {(x.get('title') or '')[:28]}", f"src:v:{x['id']}")] for i, x in enumerate(lst, 1)]
     rows.append([("➕ Manba qo‘shish", "src:add")])
     return "\n".join(lines), kb(rows)

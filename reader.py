@@ -15,6 +15,7 @@ from aiogram.types import CallbackQuery, FSInputFile, InputMediaPhoto, Message
 
 import catalog
 import chapters as chapfiles
+import rating
 from core import CAT, SUB_OK, bot, esc, kb, log, missing_channels, no_keyboard, retry, safe_delete, sub_markup
 from core import download, STATE
 
@@ -30,7 +31,8 @@ PAGE = 10
 
 
 def home_markup():
-    return kb([[(B_CATALOG, "u:cat"), (B_POPULAR, "u:pop")],
+    return kb([[("📱 Ilovani ochish", "app:")],
+               [(B_CATALOG, "u:cat"), ("🏆 Reyting", "u:pop")],
                [(B_FAVS, "u:fav"), (B_CONT, "u:cont")],
                [(B_ACC, "u:acc"), (B_SEARCH, "u:find")]])
 
@@ -96,6 +98,12 @@ def card_text(m, u):
     st, days = catalog.status_text(m), catalog.days_text(m.get("days"))
     if st or days:
         lines.append(" · ".join(x for x in (st, f"📅 {days}" if days else "") if x))
+    avg, votes = rating.stars(m)
+    rank = rating.rank_of(m["code"], "week")
+    extra = [x for x in ((f"⭐ {avg:.1f} ({votes} baho)" if votes else ""),
+                         (f"🏆 Haftalik reytingda {rank}-o‘rin" if rank else "")) if x]
+    if extra:
+        lines.append(" · ".join(extra))
     if m.get("credit"):
         lines.append(f"✍️ {esc(m['credit'])}")
     head = "\n".join(lines)
@@ -135,6 +143,9 @@ def card_markup(m, u, uid):
     fol = code in (u.get("follows") or [])
     rows.append([("💔 Sevimlidan olish" if fav else "❤️ Sevimli", f"fav:{code}"),
                  ("🔕 Kuzatishni to‘xtatish" if fol else "🔔 Kuzatish", f"fol:{code}")])
+    mine = rating.my_stars(u, code)
+    rows.append([((f"⭐ Bahoyingiz: {mine}" if mine else "⭐ Baho berish"), f"rt:{code}"),
+                 ("📱 Ilovada", f"app:?m={code}")])
     rows.append([("📤 Ulashish", f"url:https://t.me/share/url?url=https://t.me/{STATE['username']}?start={code}"),
                  HOME])
     if CAT.is_admin(uid):
@@ -208,12 +219,48 @@ async def show_catalog(event, page=0, genre=None):
     await send_or_edit(event, title, manga_rows(items, page, prefix, tail + [HOME]))
 
 
+MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
+TOP_HEAD = {"week": "🏆 <b>Reyting — shu hafta</b>\n<i>So‘nggi 7 kunda nechta odam o‘qigani bo‘yicha</i>",
+            "month": "🏆 <b>Reyting — shu oy</b>\n<i>So‘nggi 30 kunda nechta odam o‘qigani bo‘yicha</i>",
+            "all": "🏆 <b>Reyting — barcha vaqt</b>\n<i>Umumiy ko‘rishlar bo‘yicha</i>",
+            "stars": "🏆 <b>Reyting — baholar</b>\n<i>O‘quvchilar qo‘ygan yulduzlar bo‘yicha</i>"}
+
+
+def delta_text(it):
+    if it.get("new"):
+        return " 🆕"
+    d = it.get("delta")
+    return f" ⬆️{d}" if d and d > 0 else f" ⬇️{-d}" if d and d < 0 else ""
+
+
+async def top_view(period="week"):
+    period = period if period in rating.PERIODS else "week"
+    items = await rating.ranking(period, 10)
+    tabs = [((f"• {rating.TITLES[p]} •" if p == period else rating.TITLES[p]), f"top:{p}") for p in rating.PERIODS]
+    rows = []
+    for it in items:
+        m = CAT.get(it["code"])
+        if not m:
+            continue
+        place = MEDALS.get(it["rank"], f"{it['rank']}.")
+        val = (f"⭐ {it['value']:.1f}" if period == "stars" else f"👁 {it['value']}")
+        rows.append([(f"{place} {m['title'][:30]} · {val}{delta_text(it) if period in ('week', 'month') else ''}",
+                      f"m:{m['code']}")])
+    text = TOP_HEAD[period]
+    if not rows:
+        text += "\n\n📭 Hozircha bu bo‘limda ma’lumot yo‘q — o‘qishlar ko‘paygani sari reyting to‘ladi."
+    rows += [tabs[:2], tabs[2:], [("📱 Ilovada ko‘rish", "app:?p=top"), HOME]]
+    return text, kb(rows)
+
+
 def popular_view():
+    """Eski «🔥 Mashhur» ro'yxati (sinxron) — reyting keshidan."""
     items = CAT.popular(10)
     if not items:
         return "📭 Hozircha katalog bo‘sh.", kb([[HOME]])
-    rows = [[(f"{i}. {m['title'][:38]} · 👁 {m.get('views', 0)}", f"m:{m['code']}")] for i, m in enumerate(items, 1)]
-    rows.append([HOME])
+    rows = [[(f"{MEDALS.get(i, f'{i}.')} {m['title'][:36]} · 👁 {m.get('views', 0)}", f"m:{m['code']}")]
+            for i, m in enumerate(items, 1)]
+    rows.append([("🏆 To‘liq reyting", "top:week"), HOME])
     return "🔥 <b>Eng ko‘p o‘qilganlar</b>", kb(rows)
 
 
@@ -349,6 +396,7 @@ async def read_chapter(chat_id, uid, code, num, as_pdf=False):
         await bot.send_message(chat_id, end, reply_markup=kb(rows))
         await CAT.set_progress(uid, code, num)
         await CAT.add_view(code)
+        await rating.note_read(uid, code)
     finally:
         READING.pop(uid, None)
 
@@ -397,6 +445,10 @@ async def cmd_start(msg: Message, command: CommandObject = None):
 
 
 async def open_arg(chat_id, uid, arg):
+    if arg in ("shop", "vip"):
+        await bot.send_message(chat_id, "💳 To‘lov tizimi tez orada qo‘shiladi. Hozircha jeton yoki VIP uchun admin bilan "
+                                        "bog‘laning.", reply_markup=kb([[HOME]]))
+        return
     mt = re.fullmatch(r"c?(\d+)[_-](\d+(?:[.-]\d+)?)", arg)
     if mt:
         await read_chapter(chat_id, uid, mt.group(1), float(mt.group(2).replace("-", ".")))
@@ -451,7 +503,7 @@ async def cb_home(c: CallbackQuery):
         await show_catalog(c)
         return
     if act == "pop":
-        text, markup = popular_view()
+        text, markup = await top_view("week")
     elif act == "fav":
         text, markup = favs_view(u)
     elif act == "cont":
@@ -483,7 +535,7 @@ async def on_catalog(msg: Message):
 @router.message(F.text == B_POPULAR)
 async def on_popular(msg: Message):
     if await _old_button(msg, True) is not None:
-        text, markup = popular_view()
+        text, markup = await top_view("week")
         await msg.answer(text, reply_markup=markup)
 
 
@@ -593,6 +645,55 @@ async def cb_buy(c: CallbackQuery):
     await c.answer(f"✅ Bob ochildi! Qoldiq: {u.get('jetons', 0)} 🪙")
     await safe_delete(c.message)
     await read_chapter(c.from_user.id, c.from_user.id, code, float(num))
+
+
+@router.callback_query(F.data.startswith("top:"))
+async def cb_top(c: CallbackQuery):
+    if await who(c) is None:
+        await c.answer()
+        return
+    await c.answer()
+    text, markup = await top_view(c.data[4:])
+    await send_or_edit(c, text, markup)
+
+
+def stars_markup(code, mine=0):
+    row = [(("⭐" if i <= mine else "☆") + str(i), f"rt:{code}:{i}") for i in range(1, 6)]
+    return kb([row, [("⬅️ Orqaga", f"rt:{code}:0")]])
+
+
+@router.callback_query(F.data.startswith("rt:"))
+async def cb_rate(c: CallbackQuery):
+    u = await who(c)
+    if u is None:
+        await c.answer()
+        return
+    parts = c.data.split(":")
+    code = parts[1]
+    m = CAT.get(code)
+    if not m:
+        await c.answer("Topilmadi")
+        return
+    if len(parts) == 2:
+        if not rating.can_rate(u, code):
+            await c.answer("Avval kamida bitta bobni o‘qing — keyin baho bera olasiz 🙂", show_alert=True)
+            return
+        await c.answer("Necha yulduz berasiz?")
+        try:
+            await c.message.edit_reply_markup(reply_markup=stars_markup(code, rating.my_stars(u, code)))
+        except Exception:
+            pass
+        return
+    n = int(parts[2]) if parts[2].isdigit() else 0
+    if n:
+        ok, res = await rating.rate(c.from_user.id, code, n)
+        if not ok:
+            await c.answer(res, show_alert=True)
+            return
+        await c.answer(f"Rahmat! Bahoyingiz: {n} ⭐ (o‘rtacha {res[0]:.1f})")
+    else:
+        await c.answer()
+    await show_card(c.from_user.id, m, c.from_user.id, edit=c.message)
 
 
 @router.callback_query(F.data.startswith("fav:") | F.data.startswith("fol:"))

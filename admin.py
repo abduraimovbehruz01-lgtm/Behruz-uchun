@@ -19,7 +19,7 @@ import translator
 import typeset
 import promo
 from core import (A_ADD, A_ADMINS, A_CHAP, A_EXIT, A_JOURNAL, A_LIST, A_PROMO, A_SCHED, A_SRC, A_STAT, A_SUBS,
-                  ADMIN_BUTTONS, CAT, GEM,
+                  ADMIN_BUTTONS, CAT, GEM, PUBLIC_URL,
                   MAX_DOWNLOAD, MAX_PAGES, STATE, LinkError, admin_keyboard, bot, channels, download, download_to, esc,
                   fetch_url, find_url, gem_error_text, jlog, kb, log, no_keyboard, safe_delete, safe_edit,
                   storage_chat, storage_pieces, tell_owners, translate_image, upload_photos, user_tmp)
@@ -101,6 +101,11 @@ def menu_text(uid=None):
     pr = CAT.cfg.get("promo") or {}
     lines.append(f"📣 Reklama kanali: «{esc(pr.get('title') or 'kanal')}»" + ("" if pr.get("on", True) else " (to‘xtatilgan)")
                  if pr.get("id") else "📣 Reklama kanali: ulanmagan")
+    import traffic
+    lines.append("📱 Ilova: " + ("✅ «Menu» tugmasida" if PUBLIC_URL else "— (PUBLIC_URL yo‘q)")
+                 + (" · 🖼 rasmlar Cloudflare orqali ✅" if CAT.cfg.get("img_base")
+                    else " · 🖼 Cloudflare ulanmagan (boblar botda o‘qiladi)"))
+    lines.append(traffic.line())
     if uid is not None and not CAT.rights(uid):
         lines.append("\n⚠️ Sizga hali birorta huquq berilmagan — bosh admin bilan bog‘laning.")
     elif uid is None or CAT.has(uid, "chapter"):
@@ -203,13 +208,46 @@ async def cb_menu(c: CallbackQuery, state: FSMContext):
     await send_panel(c.from_user.id)
 
 
-async def send_stats(uid):
+def traffic_rows(uid):
+    import traffic
+    if not CAT.is_owner(uid):
+        return None
+    cur = traffic.limit_gb()
+    return kb([[((f"✅ {g} GB" if abs(cur - g) < 0.01 else f"{g} GB"), f"adm:tl:{g}") for g in (1, 2, 3, 4)]])
+
+
+async def send_stats(uid, edit=None):
+    import traffic
     s = await CAT.stats()
-    await bot.send_message(uid, "📊 <b>Statistika</b>\n\n"
-                                f"📚 Mangalar: {s['manga']} · boblar: {s['chapters']}\n"
-                                f"👥 Foydalanuvchilar: {s['users']} (bugun yangi: {s['new_today']})\n"
-                                f"📖 Bugun o‘qilgan boblar: {s['reads_today']}\n"
-                                f"🪙 Bugun sarflangan jetonlar: {s['jetons_today']}")
+    text = ("📊 <b>Statistika</b>\n\n"
+            f"📚 Mangalar: {s['manga']} · boblar: {s['chapters']}\n"
+            f"👥 Foydalanuvchilar: {s['users']} (bugun yangi: {s['new_today']})\n"
+            f"📖 Bugun o‘qilgan boblar: {s['reads_today']}\n"
+            f"🪙 Bugun sarflangan jetonlar: {s['jetons_today']}\n\n"
+            f"{traffic.line()}\n"
+            "<i>Render bepul tarifida barcha botlaringiz uchun oyiga jami 5 GB bor. Oshib ketsa — hamma botlar oy "
+            "oxirigacha to‘xtaydi. Chegaraga yetganda bu bot hamkor kanallardan avtomatik olishni to‘xtatadi.</i>")
+    markup = traffic_rows(uid)
+    if markup is not None:
+        text += "\n\nShu bot uchun oylik chegara:"
+    if edit is not None:
+        await safe_edit(edit, text, markup)
+    else:
+        await bot.send_message(uid, text, reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("adm:tl:"), adm)
+async def cb_traffic_limit(c: CallbackQuery):
+    if not CAT.is_owner(c.from_user.id):
+        await deny(c)
+        return
+    gb = float(c.data.split(":")[2])
+    await CAT.set_cfg(traffic_gb=gb)
+    import traffic
+    traffic.STATE["warned"] = 2 if traffic.ratio() >= 1 else 1 if traffic.ratio() >= 0.8 else 0
+    await jlog(c, f"📶 Oylik trafik chegarasi: {gb:g} GB")
+    await c.answer(f"Chegara: {gb:g} GB")
+    await send_stats(c.from_user.id, edit=c.message)
 
 
 @router.callback_query(F.data == "adm:stat", adm)
@@ -1233,7 +1271,8 @@ def manga_admin(code):
             f"📌 {esc(catalog.status_text(m) or '—')}" + (f" · 📅 {days}" if days else "") + "\n"
             f"📖 Glossariy: {len(CAT.glossary(code))} ta so‘z"
             + (f" · ✍️ {esc(m['credit'])}" if m.get("credit") else "")
-            + ("\n🙈 Yashirilgan (katalogda ko‘rinmaydi)" if m.get("hidden") else ""))
+            + ("\n🙈 Yashirilgan (katalogda ko‘rinmaydi)" if m.get("hidden") else "")
+            + ("\n⭐ Ilova bannerida" if code in (CAT.cfg.get("featured") or []) else ""))
     rows = [[("✏️ Nomi", f"ae:{code}:title"), ("📝 Tavsif", f"ae:{code}:desc")],
             [("🏷 Janrlar", f"ae:{code}:genres"), ("🖼 Muqova", f"ae:{code}:cover")],
             [("📌 Holati", f"ast:{code}"), ("📅 Chiqish kunlari", f"ard:{code}")],
@@ -1241,6 +1280,8 @@ def manga_admin(code):
             [("📤 Bob qo‘shish", f"ach:{code}"), ("📑 Boblar", f"acl:{code}:0")]]
     if drafts:
         rows.append([(f"📢 Qoralamalarni chop etish ({len(drafts)})", f"bp:{code}")])
+    feat = code in (CAT.cfg.get("featured") or [])
+    rows.append([("⭐ Bannerdan olish" if feat else "⭐ Ilova banneriga", f"afeat:{code}")])
     rows += [[("👁 Ko‘rsatish" if m.get("hidden") else "🙈 Yashirish", f"ahide:{code}"), ("🗑 O‘chirish", f"adel:{code}")],
              [("🏠 Manga sahifasi", f"m:{code}")]]
     return text, kb(rows)
@@ -1369,6 +1410,31 @@ async def cb_days(c: CallbackQuery):
 def days_text_msg(m, days):
     return (f"📅 <b>{esc(m['title'])}</b> — yangi bob qaysi kunlari chiqadi?\n"
             f"Hozir: <b>{catalog.days_text(days) or 'belgilanmagan'}</b>\n\nKunlarni bosib belgilang, keyin «✅ Tayyor».")
+
+
+@router.callback_query(F.data.startswith("afeat:"), adm)
+async def cb_feature(c: CallbackQuery):
+    """Ilovaning bosh sahifasidagi banner (birinchi qo'shilgan — birinchi ko'rinadi, ko'pi bilan 6 ta)."""
+    code = c.data[6:]
+    m = CAT.get(code)
+    if not m or not can(c, "manga"):
+        await c.answer()
+        return
+    feat = [x for x in (CAT.cfg.get("featured") or []) if CAT.get(x)]
+    if code in feat:
+        feat.remove(code)
+        msg = "Bannerdan olindi"
+    else:
+        if len(feat) >= 6:
+            await c.answer("Bannerda ko‘pi bilan 6 ta manga bo‘ladi — avval birini oling", show_alert=True)
+            return
+        feat.append(code)
+        msg = "⭐ Ilova banneriga qo‘shildi"
+    await CAT.set_cfg(featured=feat)
+    await jlog(c, f"⭐ {m['title']} — {msg.lower()}")
+    await c.answer(msg)
+    text, markup = manga_admin(code)
+    await safe_edit(c.message, text, markup)
 
 
 @router.callback_query(F.data.startswith("ahide:"), adm)

@@ -8,5 +8,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt && python -c "import cv2, numpy, PIL, pypdfium2, aiogram, google.cloud.firestore; print('cv2', cv2.__version__)"
 COPY fonts ./fonts
+COPY webapp ./webapp
 COPY *.py ./
 CMD ["python", "bot.py"]
