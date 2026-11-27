@@ -104,7 +104,7 @@ def menu_text(uid=None):
     import traffic
     lines.append("📱 Ilova: " + ("✅ «Menu» tugmasida" if PUBLIC_URL else "— (PUBLIC_URL yo‘q)")
                  + (" · 🖼 rasmlar Cloudflare orqali ✅" if CAT.cfg.get("img_base")
-                    else " · 🖼 Cloudflare ulanmagan (boblar botda o‘qiladi)"))
+                    else " · 🖼 Cloudflare ulanmagan (boblar botda o‘qiladi) — ulash: /cloudflare"))
     lines.append(traffic.line())
     if uid is not None and not CAT.rights(uid):
         lines.append("\n⚠️ Sizga hali birorta huquq berilmagan — bosh admin bilan bog‘laning.")

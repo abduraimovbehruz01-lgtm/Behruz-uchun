@@ -52,7 +52,7 @@ boblarni yuklaydi (kerak bo‘lsa bot ularni o‘zi tarjima qiladi).
 `staff.py` (adminlar, jurnal, majburiy obuna, reklama kanali), `editor.py` (bob tahriri, glossariy),
 `scheduler.py` (rejadagi boblar), `autosrc.py` (hamkor kanallar), `promo.py` (yangi bob e’loni), `tools.py` (tezkor tarjima),
 `webapp.py` + `webapp/index.html` (ilova va uning API’si), `rating.py` (reyting), `thumbs.py` (ilova uchun kichik rasmlar),
-`traffic.py` (trafik hisobi), `worker/` (Cloudflare rasmlar xizmati),
+`traffic.py` (trafik hisobi), `cloudflare.py` + `worker/` (Cloudflare rasmlar xizmati),
 `catalog.py` (katalog mantiqi), `store.py` (Firebase / xotira), `core.py` (umumiy), `translator.py`, `typeset.py`,
 `chapters.py` (tarjima, rasmga yozish, PDF/ZIP).
 
@@ -71,13 +71,14 @@ Render bepul tarifida butun hisob uchun oyiga atigi **5 GB** chiquvchi trafik bo
 tezda tugaydi va barcha botlar to‘xtab qoladi. Shuning uchun bob sahifalari **Cloudflare Worker** (bepul) orqali
 beriladi: bot imzolangan vaqtinchalik havola beradi, Worker rasmni Telegram’dan olib ko‘rsatadi.
 
-Bir martalik sozlash:
-1. cloudflare.com da bepul hisob oching va «Workers & Pages» bo‘limini bir marta oching.
-2. My Profile → API Tokens → Create Token → «Edit Cloudflare Workers» shabloni → tokenni nusxalang.
-3. GitHub → repo → Settings → Secrets and variables → Actions → New repository secret:
-   `CLOUDFLARE_API_TOKEN` (2-qadamdagi token) va `BOT_TOKEN` (@BotFather tokeni).
-4. `worker/` ichidagi biror o‘zgarish `manga-tarjima` ga push qilinsa (yoki Actions’da oxirgi ishga tushirishni
-   «Re-run» qilinsa), Worker joylanadi va botga o‘zi ulanadi — bosh adminga «🖼 Cloudflare ulandi!» xabari keladi.
+Bir martalik sozlash (telefondan ham bo‘ladi, GitHub kerak emas):
+1. cloudflare.com da bepul ro‘yxatdan o‘ting.
+2. My Profile → API Tokens → Create Token → «Edit Cloudflare Workers» → Use template → Continue to summary →
+   Create Token → tokenni nusxalang.
+3. Botga `/cloudflare` yuboring va tokenni jo‘nating. Bot tokenni tekshiradi, rasmlar xizmatini («manhora-img»)
+   o‘zi joylaydi va ilovaga ulaydi — «🖼 Cloudflare ulandi!» xabari keladi. Token xabari darhol o‘chiriladi.
+   Token bazada saqlanadi: `worker/index.js` o‘zgarsa, bot xizmatni o‘zi yangilaydi. Tokenni istalgan vaqtda
+   Cloudflare’da o‘chirib qo‘yish mumkin.
 
 Cloudflare ulanmaguncha ilova ishlayveradi: bob tanlansa, u botga yuboriladi.
 

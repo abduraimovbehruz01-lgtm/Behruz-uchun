@@ -2,6 +2,7 @@
 // Bot ilovaga imzolangan vaqtinchalik havolalar beradi: /i/<file_id>?e=<muddat>&s=<imzo>.
 // Worker imzoni tekshiradi, rasmni Telegram'dan olib, foydalanuvchiga beradi. Render trafigi sarflanmaydi.
 // Kerakli sozlama: BOT_TOKEN (Worker secret) — imzo kaliti ham shu tokendan hosil qilinadi.
+// Bot bu faylni /cloudflare buyrug'i bilan o'zi joylaydi va kod o'zgarsa qayta joylaydi.
 
 const enc = new TextEncoder();
 let KEY = null;                 // imzo kaliti (HMAC-SHA256(BOT_TOKEN, "img-w"))
@@ -20,7 +21,7 @@ function b64u(bytes) {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-export async function signature(token, fid, exp) {
+async function signature(token, fid, exp) {
   if (!KEY || KEY_FOR !== token) {
     KEY = await hmac(enc.encode(token), "img-w");
     KEY_FOR = token;

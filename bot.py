@@ -9,6 +9,7 @@ Qismlar:
   autosrc.py   — hamkor kanallar: u yerga tashlangan boblarni avtomatik olish, tarjima qilish va chop etish
   promo.py     — yangi bob e'loni: kuzatuvchilarga xabar va reklama kanaliga post
   webapp.py    — Mini App (ilova): sahifa va API; rasmlar Cloudflare Worker (worker/) orqali
+  cloudflare.py — /cloudflare: bosh admin token yuborsa, bot rasmlar xizmatini o'zi joylaydi va ulaydi
   rating.py    — reyting (noyob o'quvchilar, baholar); thumbs.py — ilova uchun kichik rasmlar
   traffic.py   — oylik chiquvchi trafik hisobi va chegarasi (Render bepul tarifi: oyiga 5 GB)
   tools.py     — adminlar uchun tezkor tarjima (sahifa/fayl yuborsa — tarjima qilib qaytaradi)
@@ -32,6 +33,7 @@ from aiogram.types import BotCommand
 
 import admin
 import autosrc
+import cloudflare
 import editor
 import reader
 import scheduler
@@ -45,7 +47,7 @@ from core import CAT, GEM, PORT, PUBLIC_URL, STATE, TEST_KEY, TOKEN, bot, http, 
 
 dp = Dispatcher()
 GEM.meter = traffic.add          # Gemini'ga yuborilgan sahifalar trafik hisobiga kiradi
-for r in (admin.router, staff.router, editor.router, autosrc.router, tools.router, reader.router):
+for r in (admin.router, staff.router, editor.router, autosrc.router, cloudflare.router, tools.router, reader.router):
     r.message.filter(F.chat.type == "private")
     dp.include_router(r)
 
@@ -103,6 +105,7 @@ async def on_startup():
         await tell_owners(f"⚠️ Bazadan katalogni yuklab bo‘lmadi: <code>{str(e)[:300]}</code>", force=True)
     asyncio.create_task(keepalive())
     asyncio.create_task(scheduler.loop())
+    asyncio.create_task(cloudflare.ensure_latest())
     log.info("Gemini: %s", await GEM.check(http()))
     try:
         await bot.set_my_commands([

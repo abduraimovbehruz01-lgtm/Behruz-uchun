@@ -84,6 +84,11 @@ async def loop():
             await rating.refresh()        # reyting keshi (10 daqiqada bir)
         except Exception:
             log.exception("reyting")
+        try:
+            import cloudflare
+            await cloudflare.tick()       # joylangan rasmlar xizmati ishga tushdimi
+        except Exception:
+            log.exception("cloudflare")
         await asyncio.sleep(CHECK_EVERY)
 
 
