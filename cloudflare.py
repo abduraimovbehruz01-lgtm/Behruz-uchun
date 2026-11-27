@@ -28,7 +28,7 @@ COMPAT = "2025-06-01"
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKER_FILE = os.path.join(HERE, "worker", "index.js")
 TOKEN_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
-STATE = {"busy": False, "last": 0.0, "doc": None}
+STATE = {"busy": False, "last": 0.0, "doc": None, "why": "", "logged": 0.0}
 CANCEL = ("❌ Bekor qilish", "adm:cancel")
 
 HOWTO = ("🖼 <b>Cloudflare — ilova rasmlari uchun (bepul)</b>\n\n"
@@ -164,6 +164,7 @@ async def healthy(url) -> bool:
         async with http().get(url + "/health", timeout=aiohttp.ClientTimeout(total=15)) as r:
             ok = r.status == 200 and "Manhora" in (await r.text())
         if not ok:
+            STATE["why"] = f"/health javobi {r.status}"
             return False
         sample = next((m.get("cover_t") or m.get("cover") for m in CAT.manga.values()
                        if m.get("cover_t") or m.get("cover")), None)
@@ -171,10 +172,13 @@ async def healthy(url) -> bool:
             exp = int(time.time()) + 3600
             async with http().get(f"{url}/i/{sample}?e={exp}&s={webapp.sign('img-w', sample, exp)}",
                                   timeout=aiohttp.ClientTimeout(total=30)) as r:
-                await r.read()
-                return r.status == 200
+                body = await r.read()
+                if r.status != 200:
+                    STATE["why"] = f"rasm sinovi {r.status}: {body[:80]!r}"
+                    return False
         return True
-    except Exception:
+    except Exception as e:
+        STATE["why"] = f"ulanib bo‘lmadi: {e!r}"[:200]
         return False
 
 
@@ -183,6 +187,7 @@ async def activate(doc) -> None:
     doc = dict(doc, ok=True, at=time.time())
     await save_doc(doc)
     await CAT.set_cfg(img_base=doc["url"])
+    log.info("Cloudflare rasmlar xizmati ulandi: %s", doc["url"])
     if first:
         await CAT.log_action(0, "🖼 Cloudflare", f"Rasmlar xizmati ulandi: {doc['url']}")
         for oid in CAT.owners:
@@ -215,8 +220,12 @@ async def tick(now=None):
         return
     STATE["last"] = now
     doc = await load_doc()
-    if doc.get("url") and not doc.get("ok") and await healthy(doc["url"]):
-        await activate(doc)
+    if doc.get("url") and not doc.get("ok"):
+        if await healthy(doc["url"]):
+            await activate(doc)
+        elif now - STATE["logged"] > 600:
+            STATE["logged"] = now
+            log.info("Cloudflare rasmlar xizmati hali javob bermayapti: %s (%s)", doc["url"], STATE["why"])
 
 
 async def ensure_latest():
@@ -232,6 +241,8 @@ async def ensure_latest():
             log.info("Cloudflare rasmlar xizmati yangilandi (%s)", info["version"])
         if doc.get("ok") and CAT.cfg.get("img_base") != doc.get("url"):
             await CAT.set_cfg(img_base=doc["url"])
+        if doc.get("url"):
+            log.info("Cloudflare rasmlar xizmati: %s (%s)", doc["url"], "ulangan" if doc.get("ok") else "ishga tushishi kutilmoqda")
     except Exception as e:
         log.warning("Cloudflare rasmlar xizmatini yangilab bo‘lmadi: %s", e)
 
