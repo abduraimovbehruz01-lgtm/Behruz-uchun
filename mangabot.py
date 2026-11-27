@@ -79,6 +79,41 @@ def pages_of(s):
     return out
 
 
+def mark(s, state=None):
+    """Seans belgisi diskda: server qayta ishga tushsa (masalan, xotira yetmay), foydalanuvchiga xabar beramiz."""
+    try:
+        import json
+        with open(os.path.join(s.dir, "session.json"), "w") as f:
+            json.dump({"uid": s.uid, "chat_id": s.chat_id, "state": state or s.state}, f)
+    except Exception:
+        pass
+
+
+async def notify_restart():
+    """Bot qayta ishga tushganda: tugallanmay qolgan manga-video seanslari egalariga xabar."""
+    import json
+    try:
+        names = os.listdir(D.work_dir)
+    except OSError:
+        return
+    for n in names:
+        p = os.path.join(D.work_dir, n)
+        f = os.path.join(p, "session.json")
+        if not (n.startswith("manga_") and os.path.isfile(f)):
+            continue
+        try:
+            with open(f) as fh:
+                info = json.load(fh)
+            if info.get("state") != "done" and time.time() - os.path.getmtime(f) < 6 * 3600:
+                await D.bot.send_message(
+                    info["chat_id"],
+                    "⚠️ Bot qayta ishga tushdi, shuning uchun manga-video to‘xtab qoldi.\n"
+                    "Iltimos, /manga bilan qaytadan boshlang va sahifalarni yana yuboring.")
+        except Exception as e:
+            log.warning("manga: qayta ishga tushish xabari yuborilmadi: %r", e)
+        shutil.rmtree(p, ignore_errors=True)
+
+
 def drop(uid):
     s = SESS.pop(uid, None)
     if s:
@@ -136,6 +171,7 @@ async def cmd_manga(m: Message):
     os.makedirs(os.path.join(d, "pages"), exist_ok=True)
     s = Sess(uid=m.from_user.id, chat_id=m.chat.id, dir=d)
     SESS[s.uid] = s
+    mark(s)
     sm = await m.answer(
         "🎞 <b>Manga-video</b>\n\n"
         "Manga sahifalarini yuboring: <b>rasm</b> (sifat uchun «fayl» qilib yuborgan yaxshi), <b>PDF</b> yoki <b>ZIP / CBZ</b>. "
@@ -260,6 +296,7 @@ async def analyse(s):
             await D.bot.send_media_group(s.chat_id, [InputMediaPhoto(media=FSInputFile(p)) for p in sheets[i:i + 10]])
     await D.bot.send_message(s.chat_id, _texts_prompt(s), reply_markup=_texts_kb(s))
     s.state = "texts"
+    mark(s)
 
 
 # ---------------------------------------------------------------- matn
@@ -413,6 +450,7 @@ async def pick_music(s, other=False):
 
 async def render(s):
     s.state = "busy"
+    mark(s)
     st = await D.bot.send_message(s.chat_id, f"🎞 Video yasalmoqda… (0/{len(s.panels)})")
     try:
         async def prog(i, n):
@@ -476,6 +514,7 @@ async def finish(s, st=None, other=False):
         except Exception:
             pass
         s.state = "done"
+        mark(s)
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -594,6 +633,7 @@ def setup(**deps):
     for k, v in deps.items():
         setattr(D, k, v)
     dp = D.dp
+    dp.startup.register(notify_restart)
     dp.message.register(cmd_manga, Command("manga"))
 
     async def _bekor_filter(m: Message):
