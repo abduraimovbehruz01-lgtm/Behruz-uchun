@@ -45,6 +45,8 @@ CTA_TEXT = os.environ.get("CTA_TEXT", "Kinoni ko‘rmoqchi bo‘lsangiz, profili
 CTA_LINE1 = os.environ.get("CTA_LINE1", "@behruzfilmbot").strip()
 CAPTION_CTA = os.environ.get("CAPTION_CTA", "🔢 Kod: {kod} — kinoni ko‘rish uchun profilimdagi botga yuboring 🍿")
 SPOKEN_CTA = os.environ.get("CTA_SPOKEN", "0") == "1"  # hikoya oxirida «...botga kodni yuboring» gapi (standart: yo'q)
+CODE_SPOKEN = os.environ.get("CODE_SPOKEN", "1") == "1"  # hikoya oxirida kino kodi ovoz bilan aytiladi
+CODE_SPOKEN_TEXT = os.environ.get("CODE_SPOKEN_TEXT", "Kino kodi: {kod}.")
 CODE_LABEL = {"kino": os.environ.get("CODE_LABEL_KINO", "Kino kodi: {kod}"),
               "anime": os.environ.get("CODE_LABEL_ANIME", "Anime kodi: {kod}")}
 ANIME_TAGS = os.environ.get("ANIME_HASHTAGS", "#anime #animelar #animeuz")
@@ -224,7 +226,18 @@ def split_sentences(text):
     return [s.strip() for s in re.split(r"(?<=[.!?…])\s+", text.strip()) if s.strip()]
 
 
-def cta_item(job):
+def spoken_end_text(job):
+    """Hikoya oxirida ovoz bilan aytiladigan gap (kino kodi yoki CTA); kerak bo'lmasa None."""
+    if not job.code:
+        return None
+    if CODE_SPOKEN:
+        return CODE_SPOKEN_TEXT.format(kod=job.code)
+    if SPOKEN_CTA:
+        return CTA_TEXT.format(kod=job.code)
+    return None
+
+
+def cta_item(job, matn=None):
     dur = job.duration
     strong = [m["t"] for m in (job.moments or []) if m.get("kuchli") and m["t"] < dur * 0.92]
     if strong:
@@ -235,7 +248,7 @@ def cta_item(job):
         a, b = story[-1]["start"], story[-1]["end"]
     else:
         a, b = dur * 0.7, dur * 0.7 + 30
-    return {"matn": CTA_TEXT.format(kod=job.code), "start": a, "end": b, "cta": True}
+    return {"matn": matn or CTA_TEXT.format(kod=job.code), "start": a, "end": b, "cta": True}
 
 
 async def write_checked(job):
@@ -283,8 +296,8 @@ def build_script(job, res):
         job.kind = res["turi"]
     job.caption = hide_title((res.get("izoh") or "").strip(), job)
     job.tags = clean_tags(res.get("heshteglar") or [], job)
-    if job.code and SPOKEN_CTA:
-        script.append(cta_item(job))
+    if spoken_end_text(job):
+        script.append(cta_item(job, spoken_end_text(job)))
     return script
 
 
@@ -416,7 +429,7 @@ async def resume_job(uid, chat_id):
         if pl.get("cands"):
             job.plain.update(cands=pl["cands"], idx=int(pl.get("idx", -1)),
                              used=[tuple(x) for x in pl.get("used") or []])
-        if not SPOKEN_CTA:
+        if not (CODE_SPOKEN or SPOKEN_CTA):
             job.script = [x for x in job.script if not x.get("cta")] or job.script
     JOBS[uid] = job
     sm = await bot.send_message(chat_id, f"🔁 Davom ettiryapman: kinoni qaytadan yuklab olyapman ({human_mb(job.size)})…")
@@ -1230,11 +1243,11 @@ async def cmd_code(m: Message, command: CommandObject):
     if not code:
         return await m.answer("Masalan: <code>/kod 125</code>")
     job.code, job.asking = code, (None if job.asking == "code" else job.asking)
-    if job.script and SPOKEN_CTA:
+    if job.script and spoken_end_text(job):
         if job.script[-1].get("cta"):
-            job.script[-1]["matn"] = CTA_TEXT.format(kod=code)
+            job.script[-1]["matn"] = spoken_end_text(job)
         else:
-            job.script.append(cta_item(job))
+            job.script.append(cta_item(job, spoken_end_text(job)))
         return await m.answer(f"✅ Kod: {esc(code)}\nOxirgi gap: <i>{esc(job.script[-1]['matn'])}</i>\n"
                               "Ovozni shu gap bilan o‘qib yuboring.")
     await m.answer(f"✅ Kod: {esc(code)}. Videoning pastida «{esc(code_label(job))}» deb yoziladi.")
